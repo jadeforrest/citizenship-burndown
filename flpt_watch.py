@@ -3,8 +3,9 @@
 FLPT feed watcher.
 
 Polls IRCC's published processing-times JSON feed, reports the current
-"citizen-proofs-2025/07" backlog figure, and beeps once whenever
-flpt_lastupdated changes (i.e. IRCC has refreshed the feed with new data).
+"citizen-proofs-2025/07" backlog figure and wait-time estimate, and beeps
+once whenever flpt_lastupdated changes (i.e. IRCC has refreshed the feed
+with new data).
 
 Usage:
     python3 flpt_watch.py            # run forever, checking hourly
@@ -20,7 +21,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 URL = "https://www.canada.ca/content/dam/ircc/documents/json/flpt-en.json"
-FIELD_SECTION = "people-ahead"
 FIELD_KEY = "citizen-proofs-2025/07"
 STATE_PATH = Path(__file__).with_name("flpt_state.json")
 CHECK_INTERVAL_SECONDS = 3600
@@ -61,7 +61,8 @@ def beep() -> None:
 def check_once(state: dict) -> dict:
     data = fetch()
     last_updated = data.get("default-update", {}).get("flpt_lastupdated")
-    backlog = data.get(FIELD_SECTION, {}).get(FIELD_KEY)
+    people_ahead = data.get("people-ahead", {}).get(FIELD_KEY)
+    wait_time = data.get("wait-times", {}).get(FIELD_KEY)
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     prev_last_updated = state.get("flpt_lastupdated")
@@ -73,10 +74,12 @@ def check_once(state: dict) -> dict:
     else:
         print(f"[{now}] flpt_lastupdated unchanged: {last_updated!r}")
 
-    print(f"[{now}] {FIELD_KEY}: {backlog!r}")
+    print(f"[{now}] {FIELD_KEY} people ahead: {people_ahead!r}")
+    print(f"[{now}] {FIELD_KEY} wait time:    {wait_time!r}")
 
     state["flpt_lastupdated"] = last_updated
-    state[FIELD_KEY] = backlog
+    state["people_ahead"] = people_ahead
+    state["wait_time"] = wait_time
     state["last_checked"] = now
     save_state(state)
     return state

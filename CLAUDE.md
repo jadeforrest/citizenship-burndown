@@ -12,8 +12,9 @@ proof-of-citizenship processing times:
   monthly backlog counts (newest first, oldest last); the script infers the
   monthly processing rate and prints low/likely/high time-remaining estimates.
 - [flpt_watch.py](flpt_watch.py) — polls IRCC's published processing-times
-  feed hourly, tracks the `citizen-proofs-2025/07` backlog figure, and beeps
-  once when `flpt_lastupdated` changes (i.e. IRCC has refreshed the feed).
+  feed hourly, tracks the `citizen-proofs-2025/07` people-ahead figure and
+  wait-time estimate, and beeps once when `flpt_lastupdated` changes (i.e.
+  IRCC has refreshed the feed).
 
 There is no build step, package manifest, test suite, or linter configured in
 this repo.
