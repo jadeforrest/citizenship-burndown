@@ -164,7 +164,7 @@ def analyze(entered: list[float]) -> None:
 def main() -> None:
     print("Enter backlog counts, comma-separated.")
     print("First number = current month, each next = previous month.")
-    print("Example: 10200, 10500, 11300, 11700, 13000, 14500, 15800\n")
+    print("Example: 10100, 10200, 10500, 11300, 11700, 13000, 14500, 15800\n")
 
     try:
         raw = input("> ")
