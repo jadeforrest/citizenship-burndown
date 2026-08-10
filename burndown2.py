@@ -11,6 +11,12 @@ it is the previous month. Example:
 The script figures out how many people are processed per month, computes low /
 likely / high estimates from the stats, and prints how much time is probably
 left before the queue clears.
+
+Each estimate is broken out by how much of the cohort ahead of you has been
+processed (25% / 50% / 75% / 100%). If applications are pulled in roughly
+random order rather than strict FIFO, the 50% column is the point where you'd
+have a coin-flip chance of already being done, and 100% is the point where
+everyone ahead of you is finished.
 """
 
 import statistics
@@ -62,6 +68,16 @@ def extract_backlog(numbers: list[float]) -> tuple[list[float], list[float], str
     return numbers, [], "single column"
 
 
+# Fractions of the cohort ahead of you that have to clear. With roughly random
+# processing order, "25% of the queue processed" is also the point where you'd
+# have a 25% chance of already being done — i.e. these are your 25th/50th/75th
+# percentile wait times, with 100% as the guaranteed-done upper end.
+QUANTILES = (0.25, 0.50, 0.75, 1.00)
+
+# Width of one fmt_months() cell, for lining the quantile columns up.
+CELL = 20
+
+
 def fmt_months(months: float) -> str:
     """Human-friendly rendering of a month count."""
     if months == float("inf"):
@@ -70,6 +86,12 @@ def fmt_months(months: float) -> str:
     if years >= 1:
         return f"{months:>5.1f} mo  (~{years:.1f} yr)"
     return f"{months:>5.1f} mo  (~{years:.2f} yr)"
+
+
+def quantile_header(indent: str) -> str:
+    """Column header naming each quantile of the cohort."""
+    cells = " ".join(f"{q * 100:.0f}% done".center(CELL) for q in QUANTILES)
+    return indent + cells
 
 
 def analyze(entered: list[float]) -> None:
@@ -105,8 +127,13 @@ def analyze(entered: list[float]) -> None:
     fast = mean + stdev   # +1 sigma
     slow = mean - stdev   # -1 sigma
 
-    def months_left(rate: float) -> float:
-        return current / rate if rate > 0 else float("inf")
+    def months_left(rate: float, fraction: float = 1.0) -> float:
+        return current * fraction / rate if rate > 0 else float("inf")
+
+    def quantile_cells(rate: float) -> str:
+        return " ".join(
+            f"{fmt_months(months_left(rate, q)):{CELL}s}" for q in QUANTILES
+        )
 
     # ---- report -----------------------------------------------------------
     print("\n" + "=" * 60)
@@ -140,25 +167,36 @@ def analyze(entered: list[float]) -> None:
             trend = "roughly steady"
         print(f"  Trend:                    {trend}")
 
+    # Left-hand block is "  " + label(18) + "  " + rate(7) + "/mo  ".
+    indent = " " * (2 + 18 + 2 + 7 + 5)
+    width = len(indent) + len(QUANTILES) * CELL + (len(QUANTILES) - 1)
+
+    def scenario_line(label: str, rate: float) -> str:
+        return f"  {label:18s}  {max(rate, 0):>7,.0f}/mo  {quantile_cells(rate)}"
+
     print("\nTime remaining scenarios")
-    print("-" * 60)
+    print("  Columns = share of the cohort ahead of you that has cleared. With")
+    print("  random processing order those are your 25th/50th/75th percentile")
+    print("  waits; 100% is everyone ahead of you being done.")
+    print("-" * width)
+    print(quantile_header(indent))
     scenarios = [
         ("Fast  (+1 sigma)", fast),
         ("Likely (average)", mean),
-        ("Median          ", median),
+        ("Median", median),
         (f"Recent ({recent_n} mo pace)", recent),
         ("Slow  (-1 sigma)", slow),
     ]
     for label, rate in scenarios:
-        rate_disp = max(rate, 0)
-        print(f"  {label:20s}  {rate_disp:>7,.0f}/mo   {fmt_months(months_left(rate))}")
+        print(scenario_line(label, rate))
 
     print("\nAbsolute bounds (single best / worst month)")
-    print("-" * 60)
-    print(f"  Best case  ({hi:,.0f}/mo):   {fmt_months(months_left(hi))}")
-    print(f"  Likely     ({mean:,.0f}/mo):   {fmt_months(months_left(mean))}")
-    print(f"  Worst case ({lo:,.0f}/mo):   {fmt_months(months_left(lo))}")
-    print("=" * 60 + "\n")
+    print("-" * width)
+    print(quantile_header(indent))
+    print(scenario_line("Best case  (max)", hi))
+    print(scenario_line("Likely     (avg)", mean))
+    print(scenario_line("Worst case (min)", lo))
+    print("=" * width + "\n")
 
 
 def main() -> None:

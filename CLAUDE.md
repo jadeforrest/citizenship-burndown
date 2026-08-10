@@ -59,8 +59,13 @@ functions plus a `main()` that wires them to stdin/stdout:
 3. `analyze` — the core logic: reverses input to chronological order, computes
    month-over-month processed counts, derives mean/median/stdev/recent-pace
    rates, and prints fast/likely/median/recent/slow time-remaining scenarios
-   plus best/likely/worst absolute bounds.
+   plus best/likely/worst absolute bounds. Both tables are broken out across
+   the `QUANTILES` columns (25/50/75/100% of the cohort ahead cleared) —
+   assuming roughly random processing order, those columns are the
+   corresponding percentiles of your own wait.
 4. `fmt_months` — human-readable month/year formatting for a rate result.
+   `quantile_header` renders the matching column headings; both pad to `CELL`
+   so the two tables line up.
 
 When changing the parsing heuristics in `extract_backlog`, keep in mind it's a
 best-effort guess with no way to ask the user for confirmation — the ratio
