@@ -16,8 +16,9 @@ proof-of-citizenship processing times:
   wait-time estimate, and beeps once when `flpt_lastupdated` changes (i.e.
   IRCC has refreshed the feed).
 
-There is no build step, package manifest, test suite, or linter configured in
-this repo.
+There is no build step, package manifest, or linter configured in this repo.
+[test_burndown2.py](test_burndown2.py) covers `burndown2.py` using stdlib
+`unittest` only — keep it dependency-free.
 
 ## Running
 
@@ -33,6 +34,25 @@ To exercise the analysis logic without the interactive prompt, pipe input in:
 ```bash
 echo "10200, 10500, 11300, 11700, 13000, 14500, 15800" | python3 burndown2.py
 ```
+
+Run the tests with:
+
+```bash
+python3 -m unittest test_burndown2       # fast pass, ~0.04s
+```
+
+The `FuzzPipeline` cases run 300 random inputs by default so the suite stays a
+quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):
+
+```bash
+BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown2.FuzzPipeline
+```
+
+When mutation-testing this repo by patching `burndown2.py` in place, disable
+bytecode caching (`python3 -B`, `PYTHONDONTWRITEBYTECODE=1`) and clear
+`__pycache__` between runs. Same-length edits (`== 1` -> `== 2`) leave the file
+size and mtime-second unchanged, so Python silently reuses the stale `.pyc` and
+every such mutant appears to survive.
 
 ```bash
 python3 flpt_watch.py          # run forever, checking hourly
@@ -65,7 +85,24 @@ functions plus a `main()` that wires them to stdin/stdout:
    corresponding percentiles of your own wait.
 4. `fmt_months` — human-readable month/year formatting for a rate result.
    `quantile_header` renders the matching column headings; both pad to `CELL`
-   so the two tables line up.
+   so the two tables line up. `fmt_pct` renders a 0..1 probability.
+5. `monthly_odds` — per-month probability you'd have been pulled, given the
+   backlog at the start of each month. Returns `None` for months where the
+   queue grew or stalled rather than a misleading zero.
+6. `done_by` — forward-looking probability of being done within N months at a
+   steady rate. Exact under random draws without replacement: once k of the
+   `current` people ahead have cleared, your chance of being among them is
+   k/current, so it grows linearly to 1.
+7. `random_order_odds` — prints the odds section (`HORIZONS` sets the
+   forward-looking rows). It's the inverse of the quantile tables: those map a
+   probability to a time, this maps a time to a probability. A test pins the
+   two together, so change them as a pair.
+
+The key modelling assumption: the input counts are *people ahead of you*, and
+under uniform random processing every file in the queue has the same per-month
+draw probability. So the fraction of the ahead-of-you cohort that cleared in a
+month is also your own odds for that month — no need to know the size of the
+queue behind you.
 
 When changing the parsing heuristics in `extract_backlog`, keep in mind it's a
 best-effort guess with no way to ask the user for confirmation — the ratio

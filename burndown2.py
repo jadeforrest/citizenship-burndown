@@ -17,6 +17,11 @@ processed (25% / 50% / 75% / 100%). If applications are pulled in roughly
 random order rather than strict FIFO, the 50% column is the point where you'd
 have a coin-flip chance of already being done, and 100% is the point where
 everyone ahead of you is finished.
+
+A final section flips that around: instead of "how long until I'm X% likely to
+be done", it reports the per-month odds — what your chance of being pulled was
+in each month of the window, and your chance of being done by a few fixed
+horizons.
 """
 
 import statistics
@@ -77,6 +82,9 @@ QUANTILES = (0.25, 0.50, 0.75, 1.00)
 # Width of one fmt_months() cell, for lining the quantile columns up.
 CELL = 20
 
+# Horizons (in months) for the forward-looking odds table.
+HORIZONS = (1, 3, 6, 12, 24)
+
 
 def fmt_months(months: float) -> str:
     """Human-friendly rendering of a month count."""
@@ -92,6 +100,103 @@ def quantile_header(indent: str) -> str:
     """Column header naming each quantile of the cohort."""
     cells = " ".join(f"{q * 100:.0f}% done".center(CELL) for q in QUANTILES)
     return indent + cells
+
+
+def fmt_pct(fraction: float) -> str:
+    """Render a 0..1 probability as a percentage."""
+    return f"{fraction * 100:.1f}%"
+
+
+def monthly_odds(chrono: list[float], processed: list[float]) -> list[float | None]:
+    """
+    Per-month probability that you personally would have been pulled.
+
+    The input counts are *people ahead of you*, so `processed[i]` is the number
+    of people ahead of you who cleared in month i. Under uniform random
+    processing every file in the queue has the same chance of being drawn, so
+    the fraction of the ahead-of-you cohort that cleared is also your own odds
+    for that month. Months where the queue grew (or the starting count is
+    non-positive) have no meaningful probability and come back as None.
+    """
+    odds: list[float | None] = []
+    for i, done in enumerate(processed):
+        start = chrono[i]
+        if start <= 0 or done <= 0:
+            odds.append(None)
+        else:
+            odds.append(min(done / start, 1.0))
+    return odds
+
+
+def done_by(current: float, rate: float, months: float) -> float | None:
+    """
+    Chance you're finished within `months`, at a steady `rate` per month.
+
+    Random draws without replacement: once k of the `current` people ahead of
+    you have been pulled, the chance you were one of them is exactly k/current.
+    So the probability grows linearly until the queue empties.
+    """
+    if rate <= 0 or current <= 0:
+        return None
+    return min(rate * months / current, 1.0)
+
+
+def random_order_odds(
+    current: float,
+    chrono: list[float],
+    processed: list[float],
+    mean: float,
+    recent: float,
+    recent_n: int,
+    width: int,
+) -> None:
+    """Print the per-month odds section (backward look, then forward look)."""
+    print("\nRandom-order odds")
+    print("  If files are pulled in random order rather than strict FIFO, your")
+    print("  chance of being picked in a month is that month's throughput divided")
+    print("  by the queue at the start of the month.")
+    print("-" * width)
+
+    odds = monthly_odds(chrono, processed)
+
+    print("  Looking back — your chance of being picked, month by month")
+    print(f"    {'month':>7}  {'queue at start':>14}  {'cleared':>9}  {'chance':>7}")
+    for i, (done, chance) in enumerate(zip(processed, odds)):
+        age = len(processed) - i
+        label = f"-{age}"
+        if chance is None:
+            cell = "grew" if done < 0 else ("flat" if done == 0 else "n/a")
+        else:
+            cell = fmt_pct(chance)
+        note = "  <- last month" if age == 1 else ""
+        print(f"    {label:>7}  {chrono[i]:>14,.0f}  {done:>9,.0f}  {cell:>7}{note}")
+
+    seen = [c for c in odds if c is not None]
+    last = odds[-1]
+    if last is not None:
+        print(f"\n    Last month you had a {fmt_pct(last)} chance of being processed.")
+    else:
+        moved = "grew" if processed[-1] < 0 else "didn't move"
+        print(f"\n    Last month the queue {moved}, so your chance of being "
+              "processed was effectively nil.")
+    if seen:
+        span = "month" if len(seen) == 1 else "months"
+        print(f"    Across the {len(seen)} {span} where the queue shrank, the "
+              f"average was {fmt_pct(statistics.mean(seen))}.")
+
+    lab_w, col = 18, 24
+    avg_head = f"avg pace ({max(mean, 0):,.0f}/mo)"
+    rec_head = f"recent {recent_n} mo ({max(recent, 0):,.0f}/mo)"
+
+    print("\n  Looking ahead — chance you're done by the end of...")
+    print(f"    {'':{lab_w}}{avg_head:>{col}}{rec_head:>{col}}")
+    for h in HORIZONS:
+        label = "next month" if h == 1 else f"{h} months"
+        cells = ""
+        for rate in (mean, recent):
+            p = done_by(current, rate, h)
+            cells += f"{('never' if p is None else fmt_pct(p)):>{col}}"
+        print(f"    {label:{lab_w}}{cells}")
 
 
 def analyze(entered: list[float]) -> None:
@@ -196,6 +301,8 @@ def analyze(entered: list[float]) -> None:
     print(scenario_line("Best case  (max)", hi))
     print(scenario_line("Likely     (avg)", mean))
     print(scenario_line("Worst case (min)", lo))
+
+    random_order_odds(current, chrono, processed, mean, recent, recent_n, width)
     print("=" * width + "\n")
 
 
