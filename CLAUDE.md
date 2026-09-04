@@ -27,7 +27,23 @@ python3 burndown2.py
 ```
 
 `burndown2.py` is interactive: prompts for one line of input via `input("> ")`,
-then prints the analysis to stdout.
+then prints the analysis to stdout. Pressing return on an empty prompt falls
+back to `DEFAULT_INPUT` — that constant is meant to be edited in place, so the
+usual workflow is "paste this month's numbers into the constant, then run and
+hit return".
+
+The report sizes itself to the terminal (`output_width()`, overridable with
+`BURNDOWN_WIDTH`). `layout_for()` picks one of three shapes for the quantile
+tables: `wide` (>= `WIDE_TABLE`, 117 cols) is the full side-by-side grid,
+`compact` (>= `COMPACT_TABLE`, 80 cols) abbreviates each cell to
+`fmt_months_compact` and shortens the row labels, and `stacked` (anything
+narrower, floored at `MIN_WIDTH` = 40) gives each scenario its own block with
+one line per quantile. No figure is dropped at any width — only its shape
+changes. Prose wraps at `PROSE_WIDTH` (78) even on wider terminals.
+
+```bash
+BURNDOWN_WIDTH=50 python3 burndown2.py   # check the narrow layouts
+```
 
 To exercise the analysis logic without the interactive prompt, pipe input in:
 
@@ -76,16 +92,22 @@ functions plus a `main()` that wires them to stdin/stdout:
    counter/index column (e.g. pasted data shaped like `1 2600 1 2700 2 7800`)
    using a ratio guard (`max(markers) * 5 <= min(values)`) so genuine
    single-column data isn't mistaken for paired data.
-3. `analyze` — the core logic: reverses input to chronological order, computes
+3. `analyze` — takes an optional `width` (defaults to `output_width()`; the
+   tests pass it explicitly so the layout doesn't depend on whoever's terminal
+   is running them). The core logic: reverses input to chronological order, computes
    month-over-month processed counts, derives mean/median/stdev/recent-pace
    rates, and prints fast/likely/median/recent/slow time-remaining scenarios
    plus best/likely/worst absolute bounds. Both tables are broken out across
    the `QUANTILES` columns (25/50/75/100% of the cohort ahead cleared) —
    assuming roughly random processing order, those columns are the
    corresponding percentiles of your own wait.
-4. `fmt_months` — human-readable month/year formatting for a rate result.
-   `quantile_header` renders the matching column headings; both pad to `CELL`
-   so the two tables line up. `fmt_pct` renders a 0..1 probability.
+4. `fmt_months` — human-readable month/year formatting for a rate result, and
+   `fmt_months_compact` the abbreviated form. Both are guaranteed not to exceed
+   their column (`CELL` / `CELL_COMPACT`), degrading the format rather than
+   breaking alignment when a degenerate input produces a negative or enormous
+   month count. `quantile_header` renders the matching column headings for
+   either cell width. `fmt_pct` renders a 0..1 probability. `wrap` and
+   `stat_line` fit prose and label/value rows to the terminal.
 5. `monthly_odds` — per-month probability you'd have been pulled, given the
    backlog at the start of each month. Returns `None` for months where the
    queue grew or stalled rather than a misleading zero.
@@ -103,6 +125,11 @@ under uniform random processing every file in the queue has the same per-month
 draw probability. So the fraction of the ahead-of-you cohort that cleared in a
 month is also your own odds for that month — no need to know the size of the
 queue behind you.
+
+`print_scenarios`, `print_lookback` and `print_lookahead` own the layout.
+The last two size their columns from the data (and fall back to abbreviated
+headings when the spelled-out ones don't fit), so their widths vary with the
+input — a fuzz case asserts no rendered line ever exceeds the target width.
 
 When changing the parsing heuristics in `extract_backlog`, keep in mind it's a
 best-effort guess with no way to ask the user for confirmation — the ratio

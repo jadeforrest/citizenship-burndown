@@ -22,10 +22,18 @@ A final section flips that around: instead of "how long until I'm X% likely to
 be done", it reports the per-month odds — what your chance of being pulled was
 in each month of the window, and your chance of being done by a few fixed
 horizons.
+
+The report fits itself to the terminal: wide windows get the full side-by-side
+tables, medium ones get abbreviated cells, and narrow ones get one block per
+scenario. Nothing is dropped at any width. Set BURNDOWN_WIDTH to override the
+detected width.
 """
 
+import os
+import shutil
 import statistics
 import sys
+import textwrap
 
 
 def parse_numbers(raw: str) -> list[float]:
@@ -79,26 +87,124 @@ def extract_backlog(numbers: list[float]) -> tuple[list[float], list[float], str
 # percentile wait times, with 100% as the guaranteed-done upper end.
 QUANTILES = (0.25, 0.50, 0.75, 1.00)
 
-# Width of one fmt_months() cell, for lining the quantile columns up.
+# Width of one fmt_months() cell, for lining the quantile columns up, plus the
+# abbreviated cell used when the full-width table won't fit the terminal.
 CELL = 20
+CELL_COMPACT = 13
+
+# Left-hand block of a scenario row, before the quantile columns start:
+# wide is "  " + label(18) + "  " + rate(7) + "/mo  ", compact squeezes the
+# label and trims the padding either side of the rate.
+WIDE_LEFT = 2 + 18 + 2 + 7 + 5
+COMPACT_LEFT = 2 + 11 + 1 + 7 + 4
+
+
+def table_width(cell: int, left: int) -> int:
+    """Total width of a quantile table with the given cell and left block."""
+    return left + len(QUANTILES) * cell + (len(QUANTILES) - 1)
+
+
+WIDE_TABLE = table_width(CELL, WIDE_LEFT)
+COMPACT_TABLE = table_width(CELL_COMPACT, COMPACT_LEFT)
+
+# Below COMPACT_TABLE the tables stack instead of sitting side by side; the
+# stacked form and the prose still need a floor to wrap against.
+MIN_WIDTH = 40
+MAX_WIDTH = WIDE_TABLE
+
+# Tables use the whole terminal, but prose stops being readable long before
+# that, so paragraphs wrap at the narrower of the two.
+PROSE_WIDTH = 78
 
 # Horizons (in months) for the forward-looking odds table.
 HORIZONS = (1, 3, 6, 12, 24)
 
+# Used when you just press return at the prompt: keep your own numbers here and
+# rerunning the script is a single keystroke.
+DEFAULT_INPUT = "9700, 10100, 10200, 10500, 11300, 11700, 13000, 14500, 15800"
+
+
+def output_width() -> int:
+    """Terminal width to render into, clamped to what the report can use."""
+    raw = os.environ.get("BURNDOWN_WIDTH", "").strip()
+    cols = 0
+    if raw:
+        try:
+            cols = int(raw)
+        except ValueError:
+            cols = 0
+    else:
+        cols = shutil.get_terminal_size((80, 24)).columns
+    if cols <= 0:
+        cols = 80
+    return max(MIN_WIDTH, min(cols, MAX_WIDTH))
+
+
+def layout_for(width: int) -> str:
+    """Which quantile-table shape fits: 'wide', 'compact', or 'stacked'."""
+    if width >= WIDE_TABLE:
+        return "wide"
+    if width >= COMPACT_TABLE:
+        return "compact"
+    return "stacked"
+
+
+def wrap(text: str, width: int, indent: str = "", hanging: str | None = None) -> str:
+    """Fill prose to the terminal, without splitting numbers or hyphenated words."""
+    return textwrap.fill(
+        text,
+        width=min(width, PROSE_WIDTH),
+        initial_indent=indent,
+        subsequent_indent=indent if hanging is None else hanging,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
+def stat_line(label: str, value: str, width: int, indent: str = "",
+              pad: int = 26) -> str:
+    """A 'Label:        value' row, tightened then wrapped if it won't fit."""
+    padded = f"{indent}{label + ':':<{pad}}{value}"
+    if len(padded) <= width:
+        return padded
+    tight = f"{indent}{label}: {value.strip()}"
+    if len(tight) <= width:
+        return tight
+    return wrap(f"{label}: {value.strip()}", width, indent=indent,
+                hanging=indent + "  ")
+
 
 def fmt_months(months: float) -> str:
-    """Human-friendly rendering of a month count."""
+    """Human-friendly rendering of a month count, never wider than CELL."""
     if months == float("inf"):
         return "never (rate <= 0)"
     years = months / 12
-    if years >= 1:
-        return f"{months:>5.1f} mo  (~{years:.1f} yr)"
-    return f"{months:>5.1f} mo  (~{years:.2f} yr)"
+    text = (f"{months:>5.1f} mo  (~{years:.1f} yr)" if years >= 1
+            else f"{months:>5.1f} mo  (~{years:.2f} yr)")
+    if len(text) > CELL:
+        # Degenerate inputs (a negative backlog, a rate near zero) run past the
+        # column; drop to the tighter form rather than break the alignment.
+        text = fmt_months_compact(months)
+    return text
 
 
-def quantile_header(indent: str) -> str:
+def fmt_months_compact(months: float) -> str:
+    """Same figures as fmt_months, squeezed into CELL_COMPACT characters."""
+    if months == float("inf"):
+        return "never"
+    years = months / 12
+    text = (f"{months:>5.1f}mo {years:.1f}y" if years >= 1
+            else f"{months:>5.1f}mo {years:.2f}y")
+    if len(text) > CELL_COMPACT:
+        text = f"{months:,.0f}mo {years:,.0f}y"
+    if len(text) > CELL_COMPACT:
+        text = f"{months:.2e}mo"
+    return text
+
+
+def quantile_header(indent: str, cell: int = CELL) -> str:
     """Column header naming each quantile of the cohort."""
-    cells = " ".join(f"{q * 100:.0f}% done".center(CELL) for q in QUANTILES)
+    cells = " ".join(f"{q * 100:.0f}% done".center(cell) for q in QUANTILES)
     return indent + cells
 
 
@@ -141,6 +247,117 @@ def done_by(current: float, rate: float, months: float) -> float | None:
     return min(rate * months / current, 1.0)
 
 
+def print_scenarios(
+    rows: list[tuple[str, str, float]],
+    months_left,
+    layout: str,
+    width: int,
+) -> None:
+    """
+    Render the quantile table for `rows` of (label, short label, rate).
+
+    Wide and compact both put the quantiles across the page; stacked gives each
+    scenario its own block with one line per quantile, so the same numbers
+    survive a terminal too narrow for any grid.
+    """
+    if layout == "stacked":
+        for n, (label, _short, rate) in enumerate(rows):
+            if n:
+                print()
+            print(f"  {label:<18s} {max(rate, 0):>7,.0f}/mo")
+            for q in QUANTILES:
+                cell = fmt_months(months_left(rate, q))
+                print(f"      {q * 100:>3.0f}% done  {cell}".rstrip())
+        return
+
+    wide = layout == "wide"
+    cell_w = CELL if wide else CELL_COMPACT
+    fmt = fmt_months if wide else fmt_months_compact
+    print(quantile_header(" " * (WIDE_LEFT if wide else COMPACT_LEFT),
+                          cell_w).rstrip())
+    for label, short, rate in rows:
+        cells = " ".join(
+            f"{fmt(months_left(rate, q)):{cell_w}s}" for q in QUANTILES
+        )
+        if wide:
+            print(f"  {label:18s}  {max(rate, 0):>7,.0f}/mo  {cells}".rstrip())
+        else:
+            print(f"  {short:11s} {max(rate, 0):>7,.0f}/mo {cells}".rstrip())
+
+
+def print_lookback(
+    chrono: list[float],
+    processed: list[float],
+    odds: list[float | None],
+    width: int,
+) -> None:
+    """Month-by-month table of the odds you'd already have been pulled."""
+    queues = [f"{v:,.0f}" for v in chrono[: len(processed)]]
+    cleared = [f"{v:,.0f}" for v in processed]
+
+    # Try the spelled-out headings first, then abbreviations if they overflow.
+    headings = (
+        ("month", "queue at start", "cleared", "chance", "  <- last month"),
+        ("mo", "queue", "done", "odds", "  <-"),
+    )
+    for month_h, queue_h, done_h, odds_h, note in headings:
+        month_w = max(len(month_h), 3)
+        queue_w = max(len(queue_h), max(len(v) for v in queues))
+        done_w = max(len(done_h), max(len(v) for v in cleared))
+        odds_w = max(len(odds_h), 6)
+        total = 4 + month_w + 2 + queue_w + 2 + done_w + 2 + odds_w + len(note)
+        if total <= width:
+            break
+
+    print(wrap("Looking back — your chance of being picked, month by month",
+               width, indent="  ", hanging="  "))
+    print(f"    {month_h:>{month_w}}  {queue_h:>{queue_w}}  "
+          f"{done_h:>{done_w}}  {odds_h:>{odds_w}}")
+    for i, (done, chance) in enumerate(zip(processed, odds)):
+        age = len(processed) - i
+        if chance is None:
+            cell = "grew" if done < 0 else ("flat" if done == 0 else "n/a")
+        else:
+            cell = fmt_pct(chance)
+        print(f"    {f'-{age}':>{month_w}}  {queues[i]:>{queue_w}}  "
+              f"{cleared[i]:>{done_w}}  {cell:>{odds_w}}{note if age == 1 else ''}")
+
+
+def print_lookahead(
+    current: float,
+    mean: float,
+    recent: float,
+    recent_n: int,
+    width: int,
+) -> None:
+    """Forward-looking odds of being done by each horizon, at two paces."""
+    avg_head, rec_head = "avg pace", f"recent {recent_n} mo"
+    avg_rate, rec_rate = f"({max(mean, 0):,.0f}/mo)", f"({max(recent, 0):,.0f}/mo)"
+    labels = ["next month"] + [f"{h} months" for h in HORIZONS[1:]]
+    label_w = max(len(s) for s in labels)
+
+    joined = (f"{avg_head} {avg_rate}", f"{rec_head} {rec_rate}")
+    col = max(len(s) for s in joined) + 3
+    stacked_head = 4 + label_w + 2 * col > width
+    if stacked_head:
+        # Pace and rate on two header lines so the columns can be narrower.
+        col = max(len(s) for s in (avg_head, rec_head, avg_rate, rec_rate)) + 2
+
+    print(wrap("Looking ahead — chance you're done by the end of...",
+               width, indent="  ", hanging="  "))
+    if stacked_head:
+        print(f"    {'':{label_w}}{avg_head:>{col}}{rec_head:>{col}}")
+        print(f"    {'':{label_w}}{avg_rate:>{col}}{rec_rate:>{col}}")
+    else:
+        print(f"    {'':{label_w}}{joined[0]:>{col}}{joined[1]:>{col}}")
+    for label, h in zip(labels, HORIZONS):
+        cells = ""
+        for rate in (mean, recent):
+            p = done_by(current, rate, h)
+            cells += f"{('never' if p is None else fmt_pct(p)):>{col}}"
+        print(f"    {label:{label_w}}{cells}")
+
+
 def random_order_odds(
     current: float,
     chrono: list[float],
@@ -152,57 +369,43 @@ def random_order_odds(
 ) -> None:
     """Print the per-month odds section (backward look, then forward look)."""
     print("\nRandom-order odds")
-    print("  If files are pulled in random order rather than strict FIFO, your")
-    print("  chance of being picked in a month is that month's throughput divided")
-    print("  by the queue at the start of the month.")
+    print(wrap("If files are pulled in random order rather than strict FIFO, your "
+               "chance of being picked in a month is that month's throughput "
+               "divided by the queue at the start of the month.",
+               width, indent="  ", hanging="  "))
     print("-" * width)
 
     odds = monthly_odds(chrono, processed)
-
-    print("  Looking back — your chance of being picked, month by month")
-    print(f"    {'month':>7}  {'queue at start':>14}  {'cleared':>9}  {'chance':>7}")
-    for i, (done, chance) in enumerate(zip(processed, odds)):
-        age = len(processed) - i
-        label = f"-{age}"
-        if chance is None:
-            cell = "grew" if done < 0 else ("flat" if done == 0 else "n/a")
-        else:
-            cell = fmt_pct(chance)
-        note = "  <- last month" if age == 1 else ""
-        print(f"    {label:>7}  {chrono[i]:>14,.0f}  {done:>9,.0f}  {cell:>7}{note}")
+    print_lookback(chrono, processed, odds, width)
 
     seen = [c for c in odds if c is not None]
     last = odds[-1]
+    print()
     if last is not None:
-        print(f"\n    Last month you had a {fmt_pct(last)} chance of being processed.")
+        print(wrap(f"Last month you had a {fmt_pct(last)} chance of being "
+                   "processed.", width, indent="    ", hanging="    "))
     else:
         moved = "grew" if processed[-1] < 0 else "didn't move"
-        print(f"\n    Last month the queue {moved}, so your chance of being "
-              "processed was effectively nil.")
+        print(wrap(f"Last month the queue {moved}, so your chance of being "
+                   "processed was effectively nil.",
+                   width, indent="    ", hanging="    "))
     if seen:
         span = "month" if len(seen) == 1 else "months"
-        print(f"    Across the {len(seen)} {span} where the queue shrank, the "
-              f"average was {fmt_pct(statistics.mean(seen))}.")
+        print(wrap(f"Across the {len(seen)} {span} where the queue shrank, the "
+                   f"average was {fmt_pct(statistics.mean(seen))}.",
+                   width, indent="    ", hanging="    "))
 
-    lab_w, col = 18, 24
-    avg_head = f"avg pace ({max(mean, 0):,.0f}/mo)"
-    rec_head = f"recent {recent_n} mo ({max(recent, 0):,.0f}/mo)"
-
-    print("\n  Looking ahead — chance you're done by the end of...")
-    print(f"    {'':{lab_w}}{avg_head:>{col}}{rec_head:>{col}}")
-    for h in HORIZONS:
-        label = "next month" if h == 1 else f"{h} months"
-        cells = ""
-        for rate in (mean, recent):
-            p = done_by(current, rate, h)
-            cells += f"{('never' if p is None else fmt_pct(p)):>{col}}"
-        print(f"    {label:{lab_w}}{cells}")
+    print()
+    print_lookahead(current, mean, recent, recent_n, width)
 
 
-def analyze(entered: list[float]) -> None:
+def analyze(entered: list[float], width: int | None = None) -> None:
     if len(entered) < 2:
         print("Need at least two months to compute a rate.")
         return
+
+    width = output_width() if width is None else max(MIN_WIDTH, width)
+    layout = layout_for(width)
 
     current = entered[0]
 
@@ -215,9 +418,12 @@ def analyze(entered: list[float]) -> None:
     # ---- direction sanity check -------------------------------------------
     net = chrono[-1] - chrono[0]  # newest - oldest
     if net > 0:
-        print("\n  ⚠  Heads up: the queue is GROWING over this window")
-        print(f"     (net +{net:,.0f} since the oldest month). Estimates below")
-        print("     assume the average rate; if it keeps growing it won't clear.\n")
+        print()
+        print(wrap(f"⚠  Heads up: the queue is GROWING over this window "
+                   f"(net +{net:,.0f} since the oldest month). Estimates below "
+                   "assume the average rate; if it keeps growing it won't clear.",
+                   width, indent="  ", hanging="     "))
+        print()
 
     # ---- stats ------------------------------------------------------------
     lo = min(processed)
@@ -235,30 +441,29 @@ def analyze(entered: list[float]) -> None:
     def months_left(rate: float, fraction: float = 1.0) -> float:
         return current * fraction / rate if rate > 0 else float("inf")
 
-    def quantile_cells(rate: float) -> str:
-        return " ".join(
-            f"{fmt_months(months_left(rate, q)):{CELL}s}" for q in QUANTILES
-        )
-
     # ---- report -----------------------------------------------------------
-    print("\n" + "=" * 60)
+    banner = "=" * min(width, 60)
+    print("\n" + banner)
     print("BURN-DOWN ANALYSIS")
-    print("=" * 60)
-    print(f"Current backlog:            {current:>10,.0f}")
-    print(f"Months of data:             {len(entered):>10d}")
-    print(f"Chronological (old->new):   "
-          + " -> ".join(f"{v:,.0f}" for v in chrono))
-    print(f"Processed each month:       "
-          + ", ".join(f"{v:,.0f}" for v in processed))
+    print(banner)
+    print(stat_line("Current backlog", f"{current:>10,.0f}", width,
+                    pad=28))
+    print(stat_line("Months of data", f"{len(entered):>10d}", width,
+                    pad=28))
+    print(stat_line("Chronological (old->new)",
+                    " -> ".join(f"{v:,.0f}" for v in chrono), width, pad=28))
+    print(stat_line("Processed each month",
+                    ", ".join(f"{v:,.0f}" for v in processed), width, pad=28))
 
     print("\nRate stats (people/month)")
-    print("-" * 60)
-    print(f"  Slowest month:            {lo:>10,.0f}")
-    print(f"  Fastest month:            {hi:>10,.0f}")
-    print(f"  Average:                  {mean:>10,.0f}")
-    print(f"  Median:                   {median:>10,.0f}")
-    print(f"  Std deviation:            {stdev:>10,.0f}")
-    print(f"  Recent pace (last {recent_n} mo):  {recent:>10,.0f}")
+    print("-" * min(width, 60))
+    print(stat_line("Slowest month", f"{lo:>10,.0f}", width, "  "))
+    print(stat_line("Fastest month", f"{hi:>10,.0f}", width, "  "))
+    print(stat_line("Average", f"{mean:>10,.0f}", width, "  "))
+    print(stat_line("Median", f"{median:>10,.0f}", width, "  "))
+    print(stat_line("Std deviation", f"{stdev:>10,.0f}", width, "  "))
+    print(stat_line(f"Recent pace (last {recent_n} mo)", f"{recent:>10,.0f}",
+                    width, "  "))
 
     # Trend note.
     if len(processed) >= 4:
@@ -270,52 +475,65 @@ def analyze(entered: list[float]) -> None:
             trend = "DECELERATING (slowing down)"
         else:
             trend = "roughly steady"
-        print(f"  Trend:                    {trend}")
+        print(stat_line("Trend", trend, width, "  "))
 
-    # Left-hand block is "  " + label(18) + "  " + rate(7) + "/mo  ".
-    indent = " " * (2 + 18 + 2 + 7 + 5)
-    width = len(indent) + len(QUANTILES) * CELL + (len(QUANTILES) - 1)
-
-    def scenario_line(label: str, rate: float) -> str:
-        return f"  {label:18s}  {max(rate, 0):>7,.0f}/mo  {quantile_cells(rate)}"
+    table_rule = "-" * width
+    axis = "Rows below each scenario" if layout == "stacked" else "Columns"
 
     print("\nTime remaining scenarios")
-    print("  Columns = share of the cohort ahead of you that has cleared. With")
-    print("  random processing order those are your 25th/50th/75th percentile")
-    print("  waits; 100% is everyone ahead of you being done.")
-    print("-" * width)
-    print(quantile_header(indent))
-    scenarios = [
-        ("Fast  (+1 sigma)", fast),
-        ("Likely (average)", mean),
-        ("Median", median),
-        (f"Recent ({recent_n} mo pace)", recent),
-        ("Slow  (-1 sigma)", slow),
-    ]
-    for label, rate in scenarios:
-        print(scenario_line(label, rate))
+    print(wrap(f"{axis} = share of the cohort ahead of you that has cleared. "
+               "With random processing order those are your 25th/50th/75th "
+               "percentile waits; 100% is everyone ahead of you being done.",
+               width, indent="  ", hanging="  "))
+    print(table_rule)
+    print_scenarios(
+        [
+            ("Fast  (+1 sigma)", "Fast  +1sd", fast),
+            ("Likely (average)", "Likely avg", mean),
+            ("Median", "Median", median),
+            (f"Recent ({recent_n} mo pace)", f"Recent {recent_n}mo", recent),
+            ("Slow  (-1 sigma)", "Slow  -1sd", slow),
+        ],
+        months_left,
+        layout,
+        width,
+    )
 
-    print("\nAbsolute bounds (single best / worst month)")
-    print("-" * width)
-    print(quantile_header(indent))
-    print(scenario_line("Best case  (max)", hi))
-    print(scenario_line("Likely     (avg)", mean))
-    print(scenario_line("Worst case (min)", lo))
+    print()
+    print(wrap("Absolute bounds (single best / worst month)", width))
+    print(table_rule)
+    print_scenarios(
+        [
+            ("Best case  (max)", "Best (max)", hi),
+            ("Likely     (avg)", "Likely(avg)", mean),
+            ("Worst case (min)", "Worst (min)", lo),
+        ],
+        months_left,
+        layout,
+        width,
+    )
 
     random_order_odds(current, chrono, processed, mean, recent, recent_n, width)
     print("=" * width + "\n")
 
 
 def main() -> None:
-    print("Enter backlog counts, comma-separated.")
-    print("First number = current month, each next = previous month.")
-    print("Example: 9700, 10100, 10200, 10500, 11300, 11700, 13000, 14500, 15800\n")
+    width = output_width()
+    print(wrap("Enter backlog counts, comma-separated.", width))
+    print(wrap("First number = current month, each next = previous month.", width))
+    print(wrap(f"Press return on its own to use: {DEFAULT_INPUT}",
+               width, hanging="    "))
+    print()
 
     try:
         raw = input("> ")
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled.")
         return
+
+    if not raw.strip():
+        raw = DEFAULT_INPUT
+        print(wrap(f"Using the default: {DEFAULT_INPUT}", width, hanging="    "))
 
     try:
         tokens = parse_numbers(raw)
@@ -327,10 +545,12 @@ def main() -> None:
 
     if dropped:
         print(f"\nInput mode: {mode}")
-        print("  Using:   " + ", ".join(f"{v:,.0f}" for v in numbers))
-        print("  Ignored: " + ", ".join(f"{v:,.0f}" for v in dropped))
+        print(wrap("Using:   " + ", ".join(f"{v:,.0f}" for v in numbers),
+                   width, indent="  ", hanging="      "))
+        print(wrap("Ignored: " + ", ".join(f"{v:,.0f}" for v in dropped),
+                   width, indent="  ", hanging="      "))
 
-    analyze(numbers)
+    analyze(numbers, width)
 
 
 if __name__ == "__main__":

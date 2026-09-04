@@ -18,6 +18,7 @@ import io
 import os
 import random
 import unittest
+import unittest.mock
 
 import burndown2 as b
 
@@ -27,11 +28,19 @@ def chrono_to_processed(chrono: list[float]) -> list[float]:
     return [chrono[i] - chrono[i + 1] for i in range(len(chrono) - 1)]
 
 
-def run_analyze(entered: list[float]) -> str:
+# Pin a width for the assertions that read the report as text: the layout is
+# terminal-dependent now, and a test that renders at whatever size the runner's
+# terminal happens to be is a test that fails on someone else's machine.
+WIDE = b.WIDE_TABLE
+COMPACT = b.COMPACT_TABLE
+STACKED = b.MIN_WIDTH
+
+
+def run_analyze(entered: list[float], width: int = WIDE) -> str:
     """Call analyze() and capture what it printed."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        b.analyze(entered)
+        b.analyze(entered, width)
     return buf.getvalue()
 
 
@@ -169,11 +178,114 @@ class Formatting(unittest.TestCase):
         for months in (0.0, 0.5, 9.9, 99.9, 999.9, float("inf")):
             self.assertLessEqual(len(b.fmt_months(months)), b.CELL, months)
 
+    def test_fmt_months_cells_fit_for_absurd_values(self):
+        # Negative months (a negative backlog) and enormous ones (a rate barely
+        # above zero) reach the formatters too, and used to overflow the cell.
+        for months in (-0.5, -1234.5, 1e5, 1e12, 0.0001):
+            self.assertLessEqual(len(b.fmt_months(months)), b.CELL, months)
+            self.assertLessEqual(
+                len(b.fmt_months_compact(months)), b.CELL_COMPACT, months
+            )
+
     def test_quantile_header_has_a_cell_per_quantile(self):
         header = b.quantile_header("")
         self.assertEqual(
             len(header), len(b.QUANTILES) * b.CELL + (len(b.QUANTILES) - 1)
         )
+
+    def test_compact_header_has_a_cell_per_quantile(self):
+        header = b.quantile_header("", b.CELL_COMPACT)
+        self.assertEqual(
+            len(header),
+            len(b.QUANTILES) * b.CELL_COMPACT + (len(b.QUANTILES) - 1),
+        )
+
+    def test_fmt_months_compact_cells_fit_the_column(self):
+        for months in (0.0, 0.5, 9.9, 99.9, 999.9, float("inf")):
+            self.assertLessEqual(
+                len(b.fmt_months_compact(months)), b.CELL_COMPACT, months
+            )
+
+    def test_fmt_months_compact_keeps_both_figures(self):
+        # Abbreviated, but still months *and* years — narrow terminals get the
+        # same information, not less of it.
+        self.assertEqual(b.fmt_months_compact(6.0), "  6.0mo 0.50y")
+        self.assertEqual(b.fmt_months_compact(18.0), " 18.0mo 1.5y")
+        self.assertEqual(b.fmt_months_compact(float("inf")), "never")
+
+
+class Widths(unittest.TestCase):
+    DATA = [9700.0, 10200, 10500, 11300, 11700, 13000, 14500, 15800]
+
+    def test_layout_thresholds(self):
+        self.assertEqual(b.layout_for(WIDE), "wide")
+        self.assertEqual(b.layout_for(WIDE - 1), "compact")
+        self.assertEqual(b.layout_for(COMPACT), "compact")
+        self.assertEqual(b.layout_for(COMPACT - 1), "stacked")
+
+    def test_output_width_honours_the_env_override(self):
+        with unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "72"}):
+            self.assertEqual(b.output_width(), 72)
+        # Junk and out-of-range values fall back to something renderable.
+        with unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "banana"}):
+            self.assertEqual(b.output_width(), 80)
+        with unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "10"}):
+            self.assertEqual(b.output_width(), b.MIN_WIDTH)
+        with unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "500"}):
+            self.assertEqual(b.output_width(), b.MAX_WIDTH)
+
+    def test_nothing_overflows_at_any_width(self):
+        # The whole point of the narrow layouts: no line may run past the
+        # terminal, or it wraps and the columns stop lining up.
+        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
+            out = run_analyze(self.DATA, width)
+            longest = max(len(line) for line in out.splitlines())
+            self.assertLessEqual(longest, width, f"width={width}")
+
+    def test_narrow_widths_are_clamped_not_broken(self):
+        # Asking for 10 columns can't be honoured; it must still render.
+        out = run_analyze(self.DATA, 10)
+        longest = max(len(line) for line in out.splitlines())
+        self.assertLessEqual(longest, b.MIN_WIDTH)
+
+    def test_prose_stays_readable_on_wide_terminals(self):
+        # Tables use the whole terminal; paragraphs stop at PROSE_WIDTH, or a
+        # 117-column window turns the explanations into unreadable ribbons.
+        out = run_analyze(self.DATA, b.MAX_WIDTH)
+        prose = [ln for ln in out.splitlines()
+                 if "random processing order" in ln or "strict FIFO" in ln]
+        self.assertTrue(prose)
+        for line in prose:
+            self.assertLessEqual(len(line), b.PROSE_WIDTH)
+
+    def test_exact_fit_keeps_the_roomier_form(self):
+        # Off-by-one here silently downgrades a layout that actually fits.
+        padded = b.stat_line("Label", "value", width=1000)
+        self.assertEqual(b.stat_line("Label", "value", len(padded)), padded)
+        # The look-back table's spelled-out headings need exactly 57 columns
+        # for this data; at 57 they must still be chosen, at 56 abbreviated.
+        self.assertIn("queue at start", run_analyze(self.DATA, 57))
+        self.assertNotIn("queue at start", run_analyze(self.DATA, 56))
+
+    def test_every_layout_keeps_every_number(self):
+        # Same figures at every width — narrow reshapes the report, it doesn't
+        # drop rows or columns from it.
+        for width in (WIDE, COMPACT, STACKED):
+            out = run_analyze(self.DATA, width)
+            with self.subTest(width=width):
+                for q in b.QUANTILES:
+                    self.assertIn(f"{q * 100:.0f}% done", out)
+                for months in ("1.8", "3.6", "5.3", "7.1"):   # fast +1 sigma
+                    self.assertIn(months, out)
+                for h in b.HORIZONS[1:]:
+                    self.assertIn(f"{h} months", out)
+                self.assertIn("next month", out)
+                # One look-back row per month of throughput.
+                for age in range(1, len(self.DATA)):
+                    self.assertIn(f"-{age}", out)
+                self.assertIn("9.0%", out)      # done_by, average pace
+                self.assertIn("Median", out)
+                self.assertIn("Trend", out)
 
 
 class AnalyzeOutput(unittest.TestCase):
@@ -220,6 +332,44 @@ class AnalyzeOutput(unittest.TestCase):
             self.assertIn(f"{h} months", out)
 
 
+    def test_default_input_is_analyzable(self):
+        # main() feeds DEFAULT_INPUT back through the parser when you press
+        # return, so it has to survive the same path a paste does — and it's
+        # meant to be edited, so this catches a typo'd replacement too.
+        numbers, dropped, mode = b.extract_backlog(
+            b.parse_numbers(b.DEFAULT_INPUT)
+        )
+        self.assertEqual(dropped, [])
+        self.assertEqual(mode, "single column")
+        self.assertGreaterEqual(len(numbers), 2)
+        self.assertIn("BURN-DOWN ANALYSIS", run_analyze(numbers))
+
+
+class MainDefaults(unittest.TestCase):
+    def _run_main(self, typed: str) -> str:
+        buf = io.StringIO()
+        with unittest.mock.patch("builtins.input", return_value=typed), \
+                unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "100"}), \
+                contextlib.redirect_stdout(buf):
+            b.main()
+        return buf.getvalue()
+
+    def test_empty_line_uses_the_default(self):
+        out = self._run_main("")
+        self.assertIn("Using the default", out)
+        expected = b.parse_numbers(b.DEFAULT_INPUT)
+        self.assertIn(f"{expected[0]:,.0f}", out)
+        self.assertIn(f"{len(expected):>10d}", out)
+
+    def test_whitespace_only_counts_as_empty(self):
+        self.assertIn("Using the default", self._run_main("   "))
+
+    def test_typed_input_wins_over_the_default(self):
+        out = self._run_main("500, 900, 1400")
+        self.assertNotIn("Using the default", out)
+        self.assertIn("500", out)
+
+
 class FuzzPipeline(unittest.TestCase):
     """
     Random inputs through the whole pipeline.
@@ -255,13 +405,18 @@ class FuzzPipeline(unittest.TestCase):
         rng = random.Random(20260829)
         for i in range(self.CASES):
             entered = self._random_backlog(rng)
-            with self.subTest(case=i, entered=entered):
-                out = run_analyze(entered)
+            width = rng.randint(b.MIN_WIDTH, b.MAX_WIDTH)
+            with self.subTest(case=i, entered=entered, width=width):
+                out = run_analyze(entered, width)
                 self.assertTrue(out.strip())
                 # A NaN or an unformatted inf leaking into the report means the
                 # arithmetic went somewhere the formatters don't handle.
                 self.assertNotIn("nan", out.lower())
                 self.assertNotIn("inf", out.lower())
+                # Whatever the numbers, the report has to stay inside the
+                # terminal — that's what the narrow layouts are for.
+                longest = max(len(line) for line in out.splitlines())
+                self.assertLessEqual(longest, width)
 
     def test_odds_invariants(self):
         rng = random.Random(20260830)
