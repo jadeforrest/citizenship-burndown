@@ -6,7 +6,7 @@ Enter a comma-separated list of backlog counts (the number of people ahead of
 you in line), where the FIRST number is the current month and each number after
 it is the previous month. Example:
 
-    10200, 10500, 11300, 11700, 13000, 14500, 15800
+    9700, 10200, 10500, 11300, 11700, 13000, 14500, 15800
 
 The script figures out how many people are processed per month, computes low /
 likely / high estimates from the stats, and prints how much time is probably
@@ -309,7 +309,7 @@ def analyze(entered: list[float]) -> None:
 def main() -> None:
     print("Enter backlog counts, comma-separated.")
     print("First number = current month, each next = previous month.")
-    print("Example: 10100, 10200, 10500, 11300, 11700, 13000, 14500, 15800\n")
+    print("Example: 9700, 10100, 10200, 10500, 11300, 11700, 13000, 14500, 15800\n")
 
     try:
         raw = input("> ")
