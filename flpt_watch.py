@@ -4,8 +4,8 @@ FLPT feed watcher.
 
 Polls IRCC's published processing-times JSON feed, reports the current
 "citizen-proofs-2025/07" backlog figure and wait-time estimate, and beeps
-once whenever flpt_lastupdated changes (i.e. IRCC has refreshed the feed
-with new data).
+and posts a macOS notification whenever flpt_lastupdated changes (i.e.
+IRCC has refreshed the feed with new data).
 
 Usage:
     python3 flpt_watch.py            # run forever, checking hourly
@@ -58,6 +58,24 @@ def beep() -> None:
         print("\a", end="", flush=True)
 
 
+def notify(title: str, message: str) -> None:
+    """Post a macOS notification; silently skip if osascript isn't available."""
+    # Pass the text as argv rather than splicing it into the script so quotes
+    # or backslashes in the feed data can't break (or inject into) AppleScript.
+    try:
+        subprocess.run(
+            ["osascript",
+             "-e", "on run argv",
+             "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+             "-e", "end run",
+             title, message],
+            check=False,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        pass
+
+
 def check_once(state: dict) -> dict:
     data = fetch()
     last_updated = data.get("default-update", {}).get("flpt_lastupdated")
@@ -71,6 +89,10 @@ def check_once(state: dict) -> dict:
     if changed:
         print(f"[{now}] flpt_lastupdated changed: {prev_last_updated!r} -> {last_updated!r}")
         beep()
+        notify(
+            "IRCC processing times updated",
+            f"Last updated {last_updated} · people ahead: {people_ahead} · wait: {wait_time}",
+        )
     else:
         print(f"[{now}] flpt_lastupdated unchanged: {last_updated!r}")
 
