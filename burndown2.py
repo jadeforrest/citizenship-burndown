@@ -194,6 +194,44 @@ def pick_cohort(raw: str, cohorts: dict, menu: list[str]) -> str | None:
     return text if text in cohorts else None
 
 
+# ANSI styling. Off unless main() finds a terminal that wants it, so anything
+# capturing the output (tests, a pipe, a file) gets plain text. Layout is always
+# measured on the plain text and painted afterwards, so colour never moves a
+# column.
+COLOR = False
+STYLES = {
+    "bold": "1", "dim": "2",
+    "red": "31", "green": "32", "yellow": "33", "cyan": "36",
+}
+
+
+def color_enabled(stream=None, environ=None) -> bool:
+    """
+    Whether to emit ANSI styling: a TTY that isn't TERM=dumb.
+
+    NO_COLOR (no-color.org) turns it off and FORCE_COLOR turns it on regardless
+    of the stream, each only when set to something non-empty; NO_COLOR wins.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("NO_COLOR"):
+        return False
+    if env.get("FORCE_COLOR", "0") not in ("", "0"):
+        return True
+    if env.get("TERM") == "dumb":
+        return False
+    isatty = getattr(sys.stdout if stream is None else stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
+def paint(text: str, *styles: str) -> str:
+    """Wrap each line of `text` in the named STYLES, when COLOR is on."""
+    if not COLOR or not styles:
+        return text
+    start = "\033[" + ";".join(STYLES[s] for s in styles) + "m"
+    return "\n".join(f"{start}{line}\033[0m" if line else line
+                     for line in text.split("\n"))
+
+
 def output_width() -> int:
     """Terminal width to render into, clamped to what the report can use."""
     raw = os.environ.get("BURNDOWN_WIDTH", "").strip()
@@ -232,14 +270,14 @@ def wrap(text: str, width: int, indent: str = "", hanging: str | None = None) ->
 
 
 def stat_line(label: str, value: str, width: int, indent: str = "",
-              pad: int = 26) -> str:
+              pad: int = 26, style: tuple[str, ...] = ("bold",)) -> str:
     """A 'Label:        value' row, tightened then wrapped if it won't fit."""
-    padded = f"{indent}{label + ':':<{pad}}{value}"
-    if len(padded) <= width:
-        return padded
-    tight = f"{indent}{label}: {value.strip()}"
-    if len(tight) <= width:
-        return tight
+    head = f"{indent}{label + ':':<{pad}}"
+    if len(head + value) <= width:
+        return head + paint(value, *style)
+    head = f"{indent}{label}: "
+    if len(head + value.strip()) <= width:
+        return head + paint(value.strip(), *style)
     return wrap(f"{label}: {value.strip()}", width, indent=indent,
                 hanging=indent + "  ")
 
@@ -318,23 +356,24 @@ def done_by(current: float, rate: float, months: float) -> float | None:
 
 
 def print_scenarios(
-    rows: list[tuple[str, str, float]],
+    rows: list[tuple[str, str, float, tuple[str, ...]]],
     months_left,
     layout: str,
     width: int,
 ) -> None:
     """
-    Render the quantile table for `rows` of (label, short label, rate).
+    Render the quantile table for `rows` of (label, short label, rate, style),
+    where style names the STYLES that colour the row's label.
 
     Wide and compact both put the quantiles across the page; stacked gives each
     scenario its own block with one line per quantile, so the same numbers
     survive a terminal too narrow for any grid.
     """
     if layout == "stacked":
-        for n, (label, _short, rate) in enumerate(rows):
+        for n, (label, _short, rate, style) in enumerate(rows):
             if n:
                 print()
-            print(f"  {label:<18s} {max(rate, 0):>7,.0f}/mo")
+            print(f"  {paint(f'{label:<18s}', *style)} {max(rate, 0):>7,.0f}/mo")
             for q in QUANTILES:
                 cell = fmt_months(months_left(rate, q))
                 print(f"      {q * 100:>3.0f}% done  {cell}".rstrip())
@@ -343,16 +382,29 @@ def print_scenarios(
     wide = layout == "wide"
     cell_w = CELL if wide else CELL_COMPACT
     fmt = fmt_months if wide else fmt_months_compact
-    print(quantile_header(" " * (WIDE_LEFT if wide else COMPACT_LEFT),
-                          cell_w).rstrip())
-    for label, short, rate in rows:
+    print(paint(quantile_header(" " * (WIDE_LEFT if wide else COMPACT_LEFT),
+                                cell_w).rstrip(), "dim"))
+    for label, short, rate, style in rows:
         cells = " ".join(
             f"{fmt(months_left(rate, q)):{cell_w}s}" for q in QUANTILES
         )
         if wide:
-            print(f"  {label:18s}  {max(rate, 0):>7,.0f}/mo  {cells}".rstrip())
+            print(f"  {paint(f'{label:18s}', *style)}  "
+                  f"{max(rate, 0):>7,.0f}/mo  {cells}".rstrip())
         else:
-            print(f"  {short:11s} {max(rate, 0):>7,.0f}/mo {cells}".rstrip())
+            print(f"  {paint(f'{short:11s}', *style)} "
+                  f"{max(rate, 0):>7,.0f}/mo {cells}".rstrip())
+
+
+def odds_cell(done: float, chance: float | None) -> tuple[str, tuple[str, ...]]:
+    """A lookback month's odds as text, plus the STYLES that colour it."""
+    if chance is not None:
+        return fmt_pct(chance), ()
+    if done < 0:
+        return "grew", ("red",)
+    if done == 0:
+        return "flat", ("yellow",)
+    return "n/a", ()
 
 
 def print_lookback(
@@ -379,18 +431,18 @@ def print_lookback(
         if total <= width:
             break
 
-    print(wrap("Looking back — your chance of being picked, month by month",
-               width, indent="  ", hanging="  "))
-    print(f"    {month_h:>{month_w}}  {queue_h:>{queue_w}}  "
-          f"{done_h:>{done_w}}  {odds_h:>{odds_w}}")
+    print(paint(wrap("Looking back — your chance of being picked, month by "
+                     "month", width, indent="  ", hanging="  "), "bold"))
+    print(paint(f"    {month_h:>{month_w}}  {queue_h:>{queue_w}}  "
+                f"{done_h:>{done_w}}  {odds_h:>{odds_w}}", "dim"))
     for i, (done, chance) in enumerate(zip(processed, odds)):
         age = len(processed) - i
-        if chance is None:
-            cell = "grew" if done < 0 else ("flat" if done == 0 else "n/a")
-        else:
-            cell = fmt_pct(chance)
-        print(f"    {f'-{age}':>{month_w}}  {queues[i]:>{queue_w}}  "
-              f"{cleared[i]:>{done_w}}  {cell:>{odds_w}}{note if age == 1 else ''}")
+        cell, tone = odds_cell(done, chance)
+        emph = ("bold",) if age == 1 else ()
+        print(paint(f"    {f'-{age}':>{month_w}}  {queues[i]:>{queue_w}}  "
+                    f"{cleared[i]:>{done_w}}  ", *emph)
+              + paint(f"{cell:>{odds_w}}", *emph, *tone)
+              + paint(note if age == 1 else "", *emph))
 
 
 def print_lookahead(
@@ -413,18 +465,21 @@ def print_lookahead(
         # Pace and rate on two header lines so the columns can be narrower.
         col = max(len(s) for s in (avg_head, rec_head, avg_rate, rec_rate)) + 2
 
-    print(wrap("Looking ahead — chance you're done by the end of...",
-               width, indent="  ", hanging="  "))
+    print(paint(wrap("Looking ahead — chance you're done by the end of...",
+                     width, indent="  ", hanging="  "), "bold"))
     if stacked_head:
-        print(f"    {'':{label_w}}{avg_head:>{col}}{rec_head:>{col}}")
-        print(f"    {'':{label_w}}{avg_rate:>{col}}{rec_rate:>{col}}")
+        print(paint(f"    {'':{label_w}}{avg_head:>{col}}{rec_head:>{col}}", "dim"))
+        print(paint(f"    {'':{label_w}}{avg_rate:>{col}}{rec_rate:>{col}}", "dim"))
     else:
-        print(f"    {'':{label_w}}{joined[0]:>{col}}{joined[1]:>{col}}")
+        print(paint(f"    {'':{label_w}}{joined[0]:>{col}}{joined[1]:>{col}}",
+                    "dim"))
     for label, h in zip(labels, HORIZONS):
         cells = ""
         for rate in (mean, recent):
             p = done_by(current, rate, h)
-            cells += f"{('never' if p is None else fmt_pct(p)):>{col}}"
+            tone = ("red",) if p is None else ("green",) if p >= 1 else ()
+            cells += paint(f"{('never' if p is None else fmt_pct(p)):>{col}}",
+                           *tone)
         print(f"    {label:{label_w}}{cells}")
 
 
@@ -438,12 +493,12 @@ def random_order_odds(
     width: int,
 ) -> None:
     """Print the per-month odds section (backward look, then forward look)."""
-    print("\nRandom-order odds")
+    print("\n" + paint("Random-order odds", "bold", "cyan"))
     print(wrap("If files are pulled in random order rather than strict FIFO, your "
                "chance of being picked in a month is that month's throughput "
                "divided by the queue at the start of the month.",
                width, indent="  ", hanging="  "))
-    print("-" * width)
+    print(paint("-" * width, "dim"))
 
     odds = monthly_odds(chrono, processed)
     print_lookback(chrono, processed, odds, width)
@@ -452,13 +507,14 @@ def random_order_odds(
     last = odds[-1]
     print()
     if last is not None:
-        print(wrap(f"Last month you had a {fmt_pct(last)} chance of being "
-                   "processed.", width, indent="    ", hanging="    "))
+        print(paint(wrap(f"Last month you had a {fmt_pct(last)} chance of "
+                         "being processed.", width, indent="    ",
+                         hanging="    "), "bold"))
     else:
         moved = "grew" if processed[-1] < 0 else "didn't move"
-        print(wrap(f"Last month the queue {moved}, so your chance of being "
-                   "processed was effectively nil.",
-                   width, indent="    ", hanging="    "))
+        print(paint(wrap(f"Last month the queue {moved}, so your chance of "
+                         "being processed was effectively nil.",
+                         width, indent="    ", hanging="    "), "yellow"))
     if seen:
         span = "month" if len(seen) == 1 else "months"
         print(wrap(f"Across the {len(seen)} {span} where the queue shrank, the "
@@ -489,10 +545,11 @@ def analyze(entered: list[float], width: int | None = None) -> None:
     net = chrono[-1] - chrono[0]  # newest - oldest
     if net > 0:
         print()
-        print(wrap(f"⚠  Heads up: the queue is GROWING over this window "
-                   f"(net +{net:,.0f} since the oldest month). Estimates below "
-                   "assume the average rate; if it keeps growing it won't clear.",
-                   width, indent="  ", hanging="     "))
+        print(paint(wrap(f"⚠  Heads up: the queue is GROWING over this window "
+                         f"(net +{net:,.0f} since the oldest month). Estimates "
+                         "below assume the average rate; if it keeps growing "
+                         "it won't clear.", width, indent="  ",
+                         hanging="     "), "bold", "yellow"))
         print()
 
     # ---- stats ------------------------------------------------------------
@@ -512,21 +569,23 @@ def analyze(entered: list[float], width: int | None = None) -> None:
         return current * fraction / rate if rate > 0 else float("inf")
 
     # ---- report -----------------------------------------------------------
-    banner = "=" * min(width, 60)
+    banner = paint("=" * min(width, 60), "cyan")
     print("\n" + banner)
-    print("BURN-DOWN ANALYSIS")
+    print(paint("BURN-DOWN ANALYSIS", "bold", "cyan"))
     print(banner)
     print(stat_line("Current backlog", f"{current:>10,.0f}", width,
                     pad=28))
     print(stat_line("Months of data", f"{len(entered):>10d}", width,
-                    pad=28))
+                    pad=28, style=()))
     print(stat_line("Chronological (old->new)",
-                    " -> ".join(f"{v:,.0f}" for v in chrono), width, pad=28))
+                    " -> ".join(f"{v:,.0f}" for v in chrono), width, pad=28,
+                    style=()))
     print(stat_line("Processed each month",
-                    ", ".join(f"{v:,.0f}" for v in processed), width, pad=28))
+                    ", ".join(f"{v:,.0f}" for v in processed), width, pad=28,
+                    style=()))
 
-    print("\nRate stats (people/month)")
-    print("-" * min(width, 60))
+    print("\n" + paint("Rate stats (people/month)", "bold", "cyan"))
+    print(paint("-" * min(width, 60), "dim"))
     print(stat_line("Slowest month", f"{lo:>10,.0f}", width, "  "))
     print(stat_line("Fastest month", f"{hi:>10,.0f}", width, "  "))
     print(stat_line("Average", f"{mean:>10,.0f}", width, "  "))
@@ -540,17 +599,17 @@ def analyze(entered: list[float], width: int | None = None) -> None:
         first_half = statistics.mean(processed[: len(processed) // 2])
         second_half = statistics.mean(processed[len(processed) // 2 :])
         if second_half > first_half * 1.15:
-            trend = "ACCELERATING (speeding up)"
+            trend, tone = "ACCELERATING (speeding up)", ("bold", "green")
         elif second_half < first_half * 0.85:
-            trend = "DECELERATING (slowing down)"
+            trend, tone = "DECELERATING (slowing down)", ("bold", "red")
         else:
-            trend = "roughly steady"
-        print(stat_line("Trend", trend, width, "  "))
+            trend, tone = "roughly steady", ()
+        print(stat_line("Trend", trend, width, "  ", style=tone))
 
-    table_rule = "-" * width
+    table_rule = paint("-" * width, "dim")
     axis = "Rows below each scenario" if layout == "stacked" else "Columns"
 
-    print("\nTime remaining scenarios")
+    print("\n" + paint("Time remaining scenarios", "bold", "cyan"))
     print(wrap(f"{axis} = share of the cohort ahead of you that has cleared. "
                "With random processing order those are your 25th/50th/75th "
                "percentile waits; 100% is everyone ahead of you being done.",
@@ -558,11 +617,11 @@ def analyze(entered: list[float], width: int | None = None) -> None:
     print(table_rule)
     print_scenarios(
         [
-            ("Fast  (+1 sigma)", "Fast  +1sd", fast),
-            ("Likely (average)", "Likely avg", mean),
-            ("Median", "Median", median),
-            (f"Recent ({recent_n} mo pace)", f"Recent {recent_n}mo", recent),
-            ("Slow  (-1 sigma)", "Slow  -1sd", slow),
+            ("Fast  (+1 sigma)", "Fast  +1sd", fast, ("green",)),
+            ("Likely (average)", "Likely avg", mean, ("bold",)),
+            ("Median", "Median", median, ()),
+            (f"Recent ({recent_n} mo pace)", f"Recent {recent_n}mo", recent, ()),
+            ("Slow  (-1 sigma)", "Slow  -1sd", slow, ("red",)),
         ],
         months_left,
         layout,
@@ -570,13 +629,14 @@ def analyze(entered: list[float], width: int | None = None) -> None:
     )
 
     print()
-    print(wrap("Absolute bounds (single best / worst month)", width))
+    print(paint(wrap("Absolute bounds (single best / worst month)", width),
+                "bold", "cyan"))
     print(table_rule)
     print_scenarios(
         [
-            ("Best case  (max)", "Best (max)", hi),
-            ("Likely     (avg)", "Likely(avg)", mean),
-            ("Worst case (min)", "Worst (min)", lo),
+            ("Best case  (max)", "Best (max)", hi, ("green",)),
+            ("Likely     (avg)", "Likely(avg)", mean, ("bold",)),
+            ("Worst case (min)", "Worst (min)", lo, ("red",)),
         ],
         months_left,
         layout,
@@ -584,7 +644,7 @@ def analyze(entered: list[float], width: int | None = None) -> None:
     )
 
     random_order_odds(current, chrono, processed, mean, recent, recent_n, width)
-    print("=" * width + "\n")
+    print(paint("=" * width, "cyan") + "\n")
 
 
 def print_cohort_menu(cohorts: dict, menu: list[str], width: int) -> None:
@@ -607,8 +667,9 @@ def cohort_numbers(cohort: str, series: list[tuple[str, float]],
                hanging="    "))
     gaps = missing_months([period for period, _ in series])
     if gaps:
-        print(wrap(f"⚠  No data for {', '.join(gaps)}: the rates below treat the "
-                   "recorded months as consecutive.", width, hanging="    "))
+        print(paint(wrap(f"⚠  No data for {', '.join(gaps)}: the rates below "
+                         "treat the recorded months as consecutive.", width,
+                         hanging="    "), "yellow"))
     return ", ".join(f"{count:.0f}" for _, count in series)
 
 
@@ -643,6 +704,8 @@ def resolve_input(raw: str, cohorts: dict, menu: list[str],
 
 
 def main() -> None:
+    global COLOR
+    COLOR = color_enabled()
     width = output_width()
     cohorts = load_cohorts(HISTORY_PATH)
     menu = cohort_menu(cohorts)
@@ -650,7 +713,7 @@ def main() -> None:
     print_prompt(cohorts, menu, default_cohort, width)
 
     try:
-        raw = input("> ")
+        raw = input(paint("> ", "bold"))
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled.")
         return
@@ -660,7 +723,7 @@ def main() -> None:
     try:
         tokens = parse_numbers(raw)
     except ValueError as e:
-        print(f"Error: {e}")
+        print(paint(f"Error: {e}", "bold", "red"))
         sys.exit(1)
 
     numbers, dropped, mode = extract_backlog(tokens)

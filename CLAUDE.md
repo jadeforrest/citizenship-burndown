@@ -50,6 +50,16 @@ changes. Prose wraps at `PROSE_WIDTH` (78) even on wider terminals.
 BURNDOWN_WIDTH=50 python3 burndown2.py   # check the narrow layouts
 ```
 
+Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
+stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
+`FORCE_COLOR=1` forces it on through a pipe. `main()` sets the module-level
+`COLOR` from `color_enabled()`, so `analyze()` called directly (as the tests do)
+stays plain unless `COLOR` is patched. `paint()` is only ever applied to text
+that's already been padded and wrapped — never put escapes inside a string
+before it's measured, or column widths and `textwrap` will miscount. A test
+pins this: stripping the escapes from coloured output must give back the plain
+report byte for byte.
+
 To exercise the analysis logic without the interactive prompt, pipe input in:
 
 ```bash

@@ -17,6 +17,7 @@ import contextlib
 import io
 import os
 import random
+import re
 import tempfile
 import unittest
 import unittest.mock
@@ -348,12 +349,16 @@ class AnalyzeOutput(unittest.TestCase):
         self.assertIn("BURN-DOWN ANALYSIS", run_analyze(numbers))
 
 
-def run_main(typed: str, history: Path) -> str:
+def run_main(typed: str, history: Path, **env: str) -> str:
     """Run main() with `typed` at the prompt and `history` as the watcher CSV."""
     buf = io.StringIO()
+    # Blank NO_COLOR/FORCE_COLOR so the developer's own shell can't switch
+    # colour on; patching COLOR restores it after main() sets it.
+    env = {"BURNDOWN_WIDTH": "100", "NO_COLOR": "", "FORCE_COLOR": "", **env}
     with unittest.mock.patch("builtins.input", return_value=typed), \
             unittest.mock.patch.object(b, "HISTORY_PATH", history), \
-            unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "100"}), \
+            unittest.mock.patch.object(b, "COLOR", False), \
+            unittest.mock.patch.dict(os.environ, env), \
             contextlib.redirect_stdout(buf):
         b.main()
     return buf.getvalue()
@@ -515,6 +520,89 @@ class MainWithHistory(unittest.TestCase):
         self.assertIn("Using the default", out)
 
 
+ANSI = re.compile(r"\033\[[0-9;]*m")
+
+
+def run_analyze_colored(entered: list[float], width: int = WIDE) -> str:
+    with unittest.mock.patch.object(b, "COLOR", True):
+        return run_analyze(entered, width)
+
+
+class Color(unittest.TestCase):
+    DATA = Widths.DATA
+
+    def test_enabled_on_a_tty(self):
+        tty, pipe = unittest.mock.Mock(), io.StringIO()
+        tty.isatty.return_value = True
+        self.assertTrue(b.color_enabled(tty, {}))
+        self.assertFalse(b.color_enabled(pipe, {}))
+        self.assertFalse(b.color_enabled(object(), {}))
+
+    def test_env_overrides(self):
+        tty = unittest.mock.Mock()
+        tty.isatty.return_value = True
+        pipe = io.StringIO()
+        self.assertFalse(b.color_enabled(tty, {"NO_COLOR": "1"}))
+        self.assertFalse(b.color_enabled(tty, {"TERM": "dumb"}))
+        self.assertTrue(b.color_enabled(tty, {"NO_COLOR": ""}))
+        self.assertTrue(b.color_enabled(pipe, {"FORCE_COLOR": "1"}))
+        self.assertFalse(b.color_enabled(pipe, {"FORCE_COLOR": "0"}))
+        self.assertFalse(b.color_enabled(pipe, {"FORCE_COLOR": ""}))
+        self.assertTrue(b.color_enabled(pipe, {"FORCE_COLOR": "1",
+                                               "TERM": "dumb"}))
+        self.assertFalse(b.color_enabled(pipe, {"FORCE_COLOR": "1",
+                                                "NO_COLOR": "1"}))
+
+    def test_paint_is_a_no_op_when_off(self):
+        self.assertEqual(b.paint("x", "bold"), "x")
+
+    def test_paint_styles_each_line_and_skips_blank_ones(self):
+        with unittest.mock.patch.object(b, "COLOR", True):
+            self.assertEqual(b.paint("a\n\nb", "bold", "red"),
+                             "\033[1;31ma\033[0m\n\n\033[1;31mb\033[0m")
+            self.assertEqual(b.paint("a"), "a")
+            self.assertEqual(b.paint("", "bold"), "")
+
+    def test_stat_line_paints_only_the_value(self):
+        plain = b.stat_line("Label", "value", 1000)
+        with unittest.mock.patch.object(b, "COLOR", True):
+            line = b.stat_line("Label", "value", 1000)
+            self.assertEqual(ANSI.sub("", line), plain)
+            self.assertTrue(line.startswith("Label:"))
+            self.assertIn("\033[1mvalue\033[0m", line)
+            tight = b.stat_line("Label", "  value", len("Label: value"))
+            self.assertEqual(tight, "Label: \033[1mvalue\033[0m")
+
+    def test_styling_never_changes_the_text(self):
+        # Colour is painted over a finished layout, so stripping it has to give
+        # back exactly the plain report — at every width, in every layout.
+        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
+            with self.subTest(width=width):
+                colored = run_analyze_colored(self.DATA, width)
+                self.assertIn("\033[", colored)
+                self.assertEqual(ANSI.sub("", colored),
+                                 run_analyze(self.DATA, width))
+
+    def test_no_style_bleeds_past_its_line(self):
+        for width in (WIDE, COMPACT, STACKED):
+            for line in run_analyze_colored(self.DATA, width).splitlines():
+                codes = ANSI.findall(line)
+                if codes:
+                    self.assertEqual(codes[-1], "\033[0m", repr(line))
+
+    def test_main_honours_force_and_no_color(self):
+        with tempfile.TemporaryDirectory() as d:
+            missing = Path(d) / "none.csv"
+            plain = run_main("", missing)
+            forced = run_main("", missing, FORCE_COLOR="1")
+            self.assertNotIn("\033[", plain)
+            self.assertIn("\033[", forced)
+            self.assertEqual(ANSI.sub("", forced), plain)
+            self.assertNotIn("\033[", run_main("", missing, FORCE_COLOR="1",
+                                               NO_COLOR="1"))
+        self.assertFalse(b.COLOR)
+
+
 class FuzzPipeline(unittest.TestCase):
     """
     Random inputs through the whole pipeline.
@@ -562,6 +650,9 @@ class FuzzPipeline(unittest.TestCase):
                 # terminal — that's what the narrow layouts are for.
                 longest = max(len(line) for line in out.splitlines())
                 self.assertLessEqual(longest, width)
+                # And colour is only ever paint on that same text.
+                colored = run_analyze_colored(entered, width)
+                self.assertEqual(ANSI.sub("", colored), out)
 
     def test_odds_invariants(self):
         rng = random.Random(20260830)
