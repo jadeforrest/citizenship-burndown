@@ -7,13 +7,21 @@ Polls IRCC's published processing-times JSON feed, reports the current
 and posts a macOS notification whenever flpt_lastupdated changes (i.e.
 IRCC has refreshed the feed with new data).
 
+Every citizen-proofs-202x/* cohort's people-ahead count and wait-time
+estimate is also appended to flpt_history.csv whenever it changes, so
+burndown2.py can analyze any cohort's month-by-month backlog. The first run
+against an empty history seeds it with SEED_HISTORY before recording the live
+snapshot.
+
 Usage:
     python3 flpt_watch.py            # run forever, checking hourly
-    python3 flpt_watch.py --once     # check once and exit (cron/testing)
+    python3 flpt_watch.py --once     # check once and exit (cron/launchd)
 """
 
 import argparse
+import csv
 import json
+import re
 import subprocess
 import sys
 import time
@@ -24,6 +32,29 @@ URL = "https://www.canada.ca/content/dam/ircc/documents/json/flpt-en.json"
 FIELD_KEY = "citizen-proofs-2025/07"
 STATE_PATH = Path(__file__).with_name("flpt_state.json")
 CHECK_INTERVAL_SECONDS = 3600
+
+HISTORY_PATH = Path(__file__).with_name("flpt_history.csv")
+HISTORY_FIELDS = (
+    "period",            # YYYY-MM of flpt_lastupdated: the feed month a row belongs to
+    "cohort",            # YYYY-MM application month, from citizen-proofs-YYYY/MM
+    "people_ahead",      # leading number in people_ahead_text ("Less than 100" -> 100)
+    "wait_months",       # leading number in wait_time_text, blank if there isn't one
+    "people_ahead_text",
+    "wait_time_text",
+    "flpt_lastupdated",
+    "observed_at",       # when this watcher saw it (UTC); "seed" for SEED_HISTORY rows
+)
+COHORT_KEY = re.compile(r"^citizen-proofs-(202\d)/(\d\d)$")
+
+# Figures recorded by hand before the watcher kept history, newest first, as
+# (feed period, people ahead). Written once, into an empty history file.
+SEED_HISTORY = {
+    "2025-07": [
+        ("2026-09", 9700), ("2026-08", 10100), ("2026-07", 10200),
+        ("2026-06", 10500), ("2026-05", 11300), ("2026-04", 11700),
+        ("2026-03", 13000), ("2026-02", 14500), ("2026-01", 15800),
+    ],
+}
 
 
 def fetch() -> dict:
@@ -76,13 +107,120 @@ def notify(title: str, message: str) -> None:
         pass
 
 
+def leading_number(text: str | None) -> int | None:
+    """First number in a feed string: "About 9,700 people ahead" -> 9700."""
+    match = re.search(r"\d[\d,]*", text or "")
+    return int(match.group().replace(",", "")) if match else None
+
+
+def feed_period(last_updated: str | None, fallback: datetime) -> str:
+    """YYYY-MM for a flpt_lastupdated like "September 3, 2026"."""
+    try:
+        return datetime.strptime(last_updated or "", "%B %d, %Y").strftime("%Y-%m")
+    except ValueError:
+        return fallback.strftime("%Y-%m")
+
+
+def snapshot_rows(data: dict, observed_at: datetime) -> list[dict]:
+    """One history row per citizen-proofs-202x/* cohort in the feed."""
+    last_updated = data.get("default-update", {}).get("flpt_lastupdated")
+    period = feed_period(last_updated, observed_at)
+    ahead = data.get("people-ahead", {})
+    waits = data.get("wait-times", {})
+    rows = []
+    for key in sorted(set(ahead) | set(waits)):
+        match = COHORT_KEY.match(key)
+        if not match:
+            continue
+        rows.append({
+            "period": period,
+            "cohort": f"{match.group(1)}-{match.group(2)}",
+            "people_ahead": leading_number(ahead.get(key)),
+            "wait_months": leading_number(waits.get(key)),
+            "people_ahead_text": ahead.get(key, ""),
+            "wait_time_text": waits.get(key, ""),
+            "flpt_lastupdated": last_updated or "",
+            "observed_at": observed_at.isoformat(timespec="seconds"),
+        })
+    return rows
+
+
+def seed_rows(live: list[dict]) -> list[dict]:
+    """
+    SEED_HISTORY as history rows, oldest first.
+
+    A seeded period the live snapshot already has a count for is skipped, so
+    the live row (which also carries the wait time) is the one that's kept.
+    """
+    live_keys = {(r["period"], r["cohort"]) for r in live
+                 if r["people_ahead"] is not None}
+    rows = []
+    for cohort, figures in SEED_HISTORY.items():
+        for period, count in reversed(figures):
+            if (period, cohort) in live_keys:
+                continue
+            rows.append({
+                "period": period, "cohort": cohort, "people_ahead": count,
+                "wait_months": "", "people_ahead_text": "", "wait_time_text": "",
+                "flpt_lastupdated": "", "observed_at": "seed",
+            })
+    return rows
+
+
+def load_history(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with path.open(newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def changed_rows(history: list[dict], live: list[dict]) -> list[dict]:
+    """
+    Live rows that differ from the latest recorded row for their cohort.
+
+    A new feed date counts as a change even when the figures didn't move, so
+    each cohort gets a row for every month IRCC publishes — a flat month is
+    still a data point for the burn-down.
+    """
+    compare = ("period", "people_ahead_text", "wait_time_text", "flpt_lastupdated")
+    latest = {row["cohort"]: row for row in history}
+    out = []
+    for row in live:
+        prev = latest.get(row["cohort"])
+        if prev is None or any(str(prev[k]) != str(row[k]) for k in compare):
+            out.append(row)
+    return out
+
+
+def append_history(rows: list[dict], path: Path) -> None:
+    new_file = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
+        if new_file:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
+def record_history(data: dict, observed_at: datetime,
+                   path: Path) -> list[dict]:
+    """Append whatever changed (seeding an empty file first); return what was written."""
+    live = snapshot_rows(data, observed_at)
+    history = load_history(path)
+    pending = [] if history else seed_rows(live)
+    pending += changed_rows(history, live)
+    if pending:
+        append_history(pending, path)
+    return pending
+
+
 def check_once(state: dict) -> dict:
     data = fetch()
     last_updated = data.get("default-update", {}).get("flpt_lastupdated")
     people_ahead = data.get("people-ahead", {}).get(FIELD_KEY)
     wait_time = data.get("wait-times", {}).get(FIELD_KEY)
 
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    observed = datetime.now(timezone.utc)
+    now = observed.isoformat(timespec="seconds")
     prev_last_updated = state.get("flpt_lastupdated")
 
     changed = prev_last_updated is not None and last_updated != prev_last_updated
@@ -98,6 +236,9 @@ def check_once(state: dict) -> dict:
 
     print(f"[{now}] {FIELD_KEY} people ahead: {people_ahead!r}")
     print(f"[{now}] {FIELD_KEY} wait time:    {wait_time!r}")
+
+    written = record_history(data, observed, HISTORY_PATH)
+    print(f"[{now}] history: {len(written)} row(s) appended to {HISTORY_PATH.name}")
 
     state["flpt_lastupdated"] = last_updated
     state["people_ahead"] = people_ahead

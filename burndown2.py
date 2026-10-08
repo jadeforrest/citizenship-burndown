@@ -27,13 +27,19 @@ The report fits itself to the terminal: wide windows get the full side-by-side
 tables, medium ones get abbreviated cells, and narrow ones get one block per
 scenario. Nothing is dropped at any width. Set BURNDOWN_WIDTH to override the
 detected width.
+
+If flpt_watch.py has been recording flpt_history.csv, the prompt also offers
+each cohort it has tracked: type a cohort (2025-07) or its menu number and its
+monthly people-ahead counts are read out newest first, as if you'd pasted them.
 """
 
+import csv
 import os
 import shutil
 import statistics
 import sys
 import textwrap
+from pathlib import Path
 
 
 def parse_numbers(raw: str) -> list[float]:
@@ -122,6 +128,70 @@ HORIZONS = (1, 3, 6, 12, 24)
 # Used when you just press return at the prompt: keep your own numbers here and
 # rerunning the script is a single keystroke.
 DEFAULT_INPUT = "9700, 10100, 10200, 10500, 11300, 11700, 13000, 14500, 15800"
+
+# Written by flpt_watch.py. When it exists, pressing return analyzes
+# DEFAULT_COHORT from it instead of DEFAULT_INPUT.
+HISTORY_PATH = Path(__file__).with_name("flpt_history.csv")
+DEFAULT_COHORT = "2025-07"
+
+
+def load_cohorts(path: Path) -> dict[str, list[tuple[str, float]]]:
+    """
+    Each cohort's (period, people ahead) series from the watcher's history,
+    newest period first — the same order the prompt expects pasted numbers in.
+
+    A period recorded more than once (IRCC revising a month) keeps the row
+    written last. Rows without a usable count are skipped.
+    """
+    by_cohort: dict[str, dict[str, float]] = {}
+    try:
+        with path.open(newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    count = float(row["people_ahead"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                by_cohort.setdefault(row["cohort"], {})[row["period"]] = count
+    except FileNotFoundError:
+        return {}
+    return {
+        cohort: sorted(periods.items(), reverse=True)
+        for cohort, periods in sorted(by_cohort.items())
+    }
+
+
+def missing_months(periods: list[str]) -> list[str]:
+    """YYYY-MM months absent between the oldest and newest of `periods`."""
+    def index(period: str) -> int:
+        year, month = period.split("-")
+        return int(year) * 12 + int(month) - 1
+
+    present = {index(p) for p in periods}
+    return [f"{i // 12}-{i % 12 + 1:02d}"
+            for i in range(min(present), max(present) + 1) if i not in present]
+
+
+def cohort_menu(cohorts: dict[str, list[tuple[str, float]]]) -> list[str]:
+    """Cohorts with enough data to analyze (two months or more), in menu order."""
+    return [c for c, series in cohorts.items() if len(series) >= 2]
+
+
+def describe_cohort(cohort: str, series: list[tuple[str, float]]) -> str:
+    span = "month" if len(series) == 1 else "months"
+    return (f"{cohort}  {len(series)} {span} of data "
+            f"({series[-1][0]} to {series[0][0]})")
+
+
+def pick_cohort(raw: str, cohorts: dict, menu: list[str]) -> str | None:
+    """
+    The cohort `raw` names, if any: a menu number, or YYYY-MM / YYYY/MM.
+
+    Anything else (pasted counts, typos) returns None and is parsed as numbers.
+    """
+    text = raw.strip().replace("/", "-")
+    if text.isdigit() and 1 <= int(text) <= len(menu):
+        return menu[int(text) - 1]
+    return text if text in cohorts else None
 
 
 def output_width() -> int:
@@ -517,13 +587,67 @@ def analyze(entered: list[float], width: int | None = None) -> None:
     print("=" * width + "\n")
 
 
-def main() -> None:
-    width = output_width()
-    print(wrap("Enter backlog counts, comma-separated.", width))
+def print_cohort_menu(cohorts: dict, menu: list[str], width: int) -> None:
+    print(wrap(f"Cohorts tracked in {HISTORY_PATH.name} (application month, "
+               "months of data):", width))
+    for n, cohort in enumerate(menu, 1):
+        print(wrap(describe_cohort(cohort, cohorts[cohort]), width,
+                   indent=f"  {n:>3}) ", hanging=" " * 7))
+    thin = len(cohorts) - len(menu)
+    if thin:
+        print(wrap(f"({thin} more with only one month so far, not enough for a "
+                   "rate.)", width, indent="       ", hanging="       "))
+    print()
+
+
+def cohort_numbers(cohort: str, series: list[tuple[str, float]],
+                   width: int) -> str:
+    """Report which cohort was picked, and return its counts as pasted input."""
+    print(wrap(f"Using cohort {describe_cohort(cohort, series)}", width,
+               hanging="    "))
+    gaps = missing_months([period for period, _ in series])
+    if gaps:
+        print(wrap(f"⚠  No data for {', '.join(gaps)}: the rates below treat the "
+                   "recorded months as consecutive.", width, hanging="    "))
+    return ", ".join(f"{count:.0f}" for _, count in series)
+
+
+def print_prompt(cohorts: dict, menu: list[str], default_cohort: str | None,
+                 width: int) -> None:
+    if menu:
+        print_cohort_menu(cohorts, menu, width)
+        print(wrap("Pick a cohort by number or YYYY-MM, or enter backlog counts, "
+                   "comma-separated.", width))
+    else:
+        print(wrap("Enter backlog counts, comma-separated.", width))
     print(wrap("First number = current month, each next = previous month.", width))
-    print(wrap(f"Press return on its own to use: {DEFAULT_INPUT}",
+    default_text = f"cohort {default_cohort}" if default_cohort else DEFAULT_INPUT
+    print(wrap(f"Press return on its own to use: {default_text}",
                width, hanging="    "))
     print()
+
+
+def resolve_input(raw: str, cohorts: dict, menu: list[str],
+                  default_cohort: str | None, width: int) -> str:
+    """Turn what was typed (blank, a cohort, or counts) into a line of counts."""
+    if not raw.strip() and default_cohort:
+        raw = default_cohort
+    elif not raw.strip():
+        raw = DEFAULT_INPUT
+        print(wrap(f"Using the default: {DEFAULT_INPUT}", width, hanging="    "))
+
+    cohort = pick_cohort(raw, cohorts, menu)
+    if cohort:
+        raw = cohort_numbers(cohort, cohorts[cohort], width)
+    return raw
+
+
+def main() -> None:
+    width = output_width()
+    cohorts = load_cohorts(HISTORY_PATH)
+    menu = cohort_menu(cohorts)
+    default_cohort = DEFAULT_COHORT if DEFAULT_COHORT in menu else None
+    print_prompt(cohorts, menu, default_cohort, width)
 
     try:
         raw = input("> ")
@@ -531,9 +655,7 @@ def main() -> None:
         print("\nCancelled.")
         return
 
-    if not raw.strip():
-        raw = DEFAULT_INPUT
-        print(wrap(f"Using the default: {DEFAULT_INPUT}", width, hanging="    "))
+    raw = resolve_input(raw, cohorts, menu, default_cohort, width)
 
     try:
         tokens = parse_numbers(raw)

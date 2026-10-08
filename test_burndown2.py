@@ -17,8 +17,11 @@ import contextlib
 import io
 import os
 import random
+import tempfile
 import unittest
 import unittest.mock
+
+from pathlib import Path
 
 import burndown2 as b
 
@@ -345,14 +348,32 @@ class AnalyzeOutput(unittest.TestCase):
         self.assertIn("BURN-DOWN ANALYSIS", run_analyze(numbers))
 
 
+def run_main(typed: str, history: Path) -> str:
+    """Run main() with `typed` at the prompt and `history` as the watcher CSV."""
+    buf = io.StringIO()
+    with unittest.mock.patch("builtins.input", return_value=typed), \
+            unittest.mock.patch.object(b, "HISTORY_PATH", history), \
+            unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "100"}), \
+            contextlib.redirect_stdout(buf):
+        b.main()
+    return buf.getvalue()
+
+
+HEADER = "period,cohort,people_ahead\n"
+
+
+def write_history(directory: str, body: str) -> Path:
+    path = Path(directory) / "flpt_history.csv"
+    path.write_text(HEADER + body)
+    return path
+
+
 class MainDefaults(unittest.TestCase):
+    """No watcher history: the prompt behaves as it always did."""
+
     def _run_main(self, typed: str) -> str:
-        buf = io.StringIO()
-        with unittest.mock.patch("builtins.input", return_value=typed), \
-                unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "100"}), \
-                contextlib.redirect_stdout(buf):
-            b.main()
-        return buf.getvalue()
+        with tempfile.TemporaryDirectory() as d:
+            return run_main(typed, Path(d) / "missing.csv")
 
     def test_empty_line_uses_the_default(self):
         out = self._run_main("")
@@ -364,10 +385,134 @@ class MainDefaults(unittest.TestCase):
     def test_whitespace_only_counts_as_empty(self):
         self.assertIn("Using the default", self._run_main("   "))
 
+    def test_eof_cancels(self):
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch("builtins.input", side_effect=EOFError), \
+                unittest.mock.patch.object(b, "HISTORY_PATH", Path(d) / "x.csv"), \
+                contextlib.redirect_stdout(io.StringIO()) as buf:
+            b.main()
+        self.assertIn("Cancelled.", buf.getvalue())
+        self.assertNotIn("BURN-DOWN", buf.getvalue())
+
+    def test_unreadable_input_exits(self):
+        with self.assertRaises(SystemExit):
+            self._run_main("12, abc")
+
+    def test_paired_input_reports_what_was_dropped(self):
+        out = self._run_main("1 2600 1 2700 2 7800")
+        self.assertIn("Ignored: 1, 1, 2", out)
+
     def test_typed_input_wins_over_the_default(self):
         out = self._run_main("500, 900, 1400")
         self.assertNotIn("Using the default", out)
         self.assertIn("500", out)
+
+
+class LoadCohorts(unittest.TestCase):
+    def test_missing_file_is_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(b.load_cohorts(Path(d) / "nope.csv"), {})
+
+    def test_newest_first_and_last_revision_wins(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write_history(d, "2026-08,2025-07,200\n"
+                                    "2026-09,2025-07,150\n"
+                                    "2026-07,2025-07,300\n"
+                                    "2026-09,2025-07,140\n"
+                                    "2026-09,2025-08,999\n")
+            got = b.load_cohorts(path)
+        self.assertEqual(got["2025-07"],
+                         [("2026-09", 140.0), ("2026-08", 200.0), ("2026-07", 300.0)])
+        self.assertEqual(got["2025-08"], [("2026-09", 999.0)])
+
+    def test_rows_without_a_count_are_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write_history(d, "2026-09,2025-07,\n2026-08,2025-07,abc\n"
+                                    "2026-07,2025-07,5\n")
+            self.assertEqual(b.load_cohorts(path), {"2025-07": [("2026-07", 5.0)]})
+
+    def test_missing_column_is_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "h.csv"
+            path.write_text("period,cohort\n2026-09,2025-07\n")
+            self.assertEqual(b.load_cohorts(path), {})
+
+
+class CohortHelpers(unittest.TestCase):
+    def test_missing_months_across_a_year_boundary(self):
+        self.assertEqual(b.missing_months(["2026-02", "2025-11", "2025-12"]),
+                         ["2026-01"])
+
+    def test_no_gaps(self):
+        self.assertEqual(b.missing_months(["2026-09", "2026-08"]), [])
+
+    def test_menu_needs_two_months(self):
+        cohorts = {"a": [("2026-09", 1)], "b": [("2026-09", 1), ("2026-08", 2)]}
+        self.assertEqual(b.cohort_menu(cohorts), ["b"])
+
+    def test_pick_by_number_name_or_slash(self):
+        cohorts = {"2025-07": [], "2025-08": []}
+        menu = ["2025-07", "2025-08"]
+        self.assertEqual(b.pick_cohort("2", cohorts, menu), "2025-08")
+        self.assertEqual(b.pick_cohort(" 2025-07 ", cohorts, menu), "2025-07")
+        self.assertEqual(b.pick_cohort("2025/08", cohorts, menu), "2025-08")
+
+    def test_pick_falls_through_to_numbers(self):
+        cohorts = {"2025-07": []}
+        menu = ["2025-07"]
+        for raw in ("0", "2", "9700, 10200", "2025-09", ""):
+            self.assertIsNone(b.pick_cohort(raw, cohorts, menu), raw)
+
+    def test_describe_singular(self):
+        self.assertIn("1 month of data",
+                      b.describe_cohort("x", [("2026-09", 5.0)]))
+
+
+SAMPLE = ("2026-07,2025-07,10500\n2026-08,2025-07,10200\n2026-09,2025-07,9700\n"
+          "2026-09,2025-08,11900\n2026-08,2025-08,12500\n"
+          "2026-09,2025-09,14400\n")
+
+
+class MainWithHistory(unittest.TestCase):
+    def _run(self, typed: str, body: str = SAMPLE) -> str:
+        with tempfile.TemporaryDirectory() as d:
+            return run_main(typed, write_history(d, body))
+
+    def test_menu_lists_cohorts_with_months_of_data(self):
+        out = self._run("")
+        self.assertIn("1) 2025-07  3 months of data (2026-07 to 2026-09)", out)
+        self.assertIn("2) 2025-08  2 months of data (2026-08 to 2026-09)", out)
+        self.assertIn("1 more with only one month", out)
+        self.assertNotIn("1) 2025-09", out)
+
+    def test_empty_line_uses_the_default_cohort(self):
+        out = self._run("")
+        self.assertIn("Using cohort 2025-07", out)
+        self.assertNotIn("Using the default", out)
+        self.assertIn("10,500 -> 10,200 -> 9,700", out)
+
+    def test_pick_by_number(self):
+        out = self._run("2")
+        self.assertIn("Using cohort 2025-08", out)
+        self.assertIn("12,500 -> 11,900", out)
+
+    def test_pasted_numbers_still_work(self):
+        out = self._run("500, 900, 1400")
+        self.assertNotIn("Using cohort", out)
+        self.assertIn("1,400 -> 900 -> 500", out)
+
+    def test_gap_is_flagged(self):
+        out = self._run("2025-07", "2026-09,2025-07,9700\n2026-07,2025-07,10500\n")
+        self.assertIn("No data for 2026-08", out)
+
+    def test_default_cohort_absent_falls_back_to_default_input(self):
+        out = self._run("", "2026-09,2025-08,11900\n2026-08,2025-08,12500\n")
+        self.assertIn("Using the default", out)
+
+    def test_no_analyzable_cohort_keeps_the_plain_prompt(self):
+        out = self._run("", "2026-09,2025-08,11900\n")
+        self.assertNotIn("Cohorts tracked", out)
+        self.assertIn("Using the default", out)
 
 
 class FuzzPipeline(unittest.TestCase):

@@ -15,11 +15,14 @@ proof-of-citizenship processing times:
   feed hourly, tracks the `citizen-proofs-2025/07` people-ahead figure and
   wait-time estimate, and beeps and posts a macOS notification when
   `flpt_lastupdated` changes (i.e.
-  IRCC has refreshed the feed).
+  IRCC has refreshed the feed). It also appends every
+  `citizen-proofs-202x/*` cohort's people-ahead count and wait-time estimate to
+  `flpt_history.csv` whenever they change, which `burndown2.py` reads.
 
 There is no build step, package manifest, or linter configured in this repo.
-[test_burndown2.py](test_burndown2.py) covers `burndown2.py` using stdlib
-`unittest` only — keep it dependency-free.
+[test_burndown2.py](test_burndown2.py) and
+[test_flpt_watch.py](test_flpt_watch.py) use stdlib `unittest` only — keep
+them dependency-free.
 
 ## Running
 
@@ -28,10 +31,11 @@ python3 burndown2.py
 ```
 
 `burndown2.py` is interactive: prompts for one line of input via `input("> ")`,
-then prints the analysis to stdout. Pressing return on an empty prompt falls
-back to `DEFAULT_INPUT` — that constant is meant to be edited in place, so the
-usual workflow is "paste this month's numbers into the constant, then run and
-hit return".
+then prints the analysis to stdout. When `flpt_history.csv` exists it first
+lists every cohort with two or more months of data; the prompt accepts a menu
+number, a cohort (`2025-07` or `2025/07`), or pasted counts. Pressing return
+uses `DEFAULT_COHORT` from the history, or `DEFAULT_INPUT` when there's no
+history (or that cohort has under two months).
 
 The report sizes itself to the terminal (`output_width()`, overridable with
 `BURNDOWN_WIDTH`). `layout_for()` picks one of three shapes for the quantile
@@ -55,7 +59,7 @@ echo "10200, 10500, 11300, 11700, 13000, 14500, 15800" | python3 burndown2.py
 Run the tests with:
 
 ```bash
-python3 -m unittest test_burndown2       # fast pass, ~0.04s
+python3 -m unittest test_burndown2 test_flpt_watch   # fast pass, ~0.2s
 ```
 
 The `FuzzPipeline` cases run 300 random inputs by default so the suite stays a
@@ -63,6 +67,7 @@ quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):
 
 ```bash
 BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown2.FuzzPipeline
+FLPT_FUZZ_CASES=5000 python3 -m unittest test_flpt_watch.FuzzSnapshots   # ~6s
 ```
 
 When mutation-testing this repo by patching `burndown2.py` in place, disable
@@ -81,6 +86,24 @@ Canada.ca's CDN appears to block Python's default TLS fingerprint but allows
 curl's. State (last `flpt_lastupdated` seen and the latest backlog figure) is
 persisted to `flpt_state.json` next to the script, which is gitignored since
 it's just a local cache.
+
+`flpt_history.csv` is the durable record (not gitignored). One row per
+(feed `period`, `cohort`), both `YYYY-MM`; `period` comes from
+`flpt_lastupdated`. A cohort gets a new row when its text figures or the feed
+date differ from its latest row, so every published month is recorded even
+when the figures are flat. Rows are append-only; the last row for a
+(period, cohort) wins. An empty or missing file is seeded from `SEED_HISTORY`
+(hand-recorded 2025-07 months, `observed_at` = `seed`) on the next run; to
+re-seed, delete the file. Hand edits are fine — keep the header.
+
+The watcher runs hourly under launchd as `com.jade.flpt-watch`
+([com.jade.flpt-watch.plist](com.jade.flpt-watch.plist), copied to
+`~/Library/LaunchAgents/`), logging to the gitignored
+`flpt_watch.launchd.log`. After editing the plist:
+
+```bash
+launchctl bootout gui/$(id -u)/com.jade.flpt-watch; cp com.jade.flpt-watch.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jade.flpt-watch.plist
+```
 
 ## Code structure
 
