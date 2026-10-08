@@ -85,6 +85,8 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(row["people_ahead"], 9700)
         self.assertEqual(row["wait_months"], 2)
         self.assertEqual(row["flpt_lastupdated"], "September 3, 2026")
+        self.assertEqual(row["people_ahead_text"], "About 9,700 people ahead of you")
+        self.assertEqual(row["wait_time_text"], "2 months left")
         self.assertEqual(set(row), set(w.HISTORY_FIELDS))
 
     def test_cohort_with_only_a_wait_time(self):
@@ -92,6 +94,12 @@ class Snapshot(unittest.TestCase):
             feed(ahead={}, waits={"citizen-proofs-2026/09": "33 months left"}), NOW)
         self.assertEqual(rows[0]["people_ahead"], None)
         self.assertEqual(rows[0]["people_ahead_text"], "")
+
+    def test_cohort_with_only_a_count(self):
+        rows = w.snapshot_rows(
+            feed(waits={}, ahead={"citizen-proofs-2026/09": "About 10 people"}), NOW)
+        self.assertEqual(rows[0]["wait_time_text"], "")
+        self.assertIsNone(rows[0]["wait_months"])
 
 
     def test_null_and_non_string_values(self):
@@ -120,6 +128,18 @@ class Seed(unittest.TestCase):
         self.assertNotIn("2026-09", periods)
         self.assertEqual(periods, sorted(periods))
         self.assertEqual(rows[-1]["people_ahead"], 10100)
+        for row in rows:
+            self.assertEqual([row[k] for k in ("wait_months", "people_ahead_text",
+                                               "wait_time_text", "flpt_lastupdated")],
+                             ["", "", "", ""])
+
+    def test_skips_only_the_live_period(self):
+        # A live period in the middle of the seeded run, not just the newest.
+        live = w.snapshot_rows(feed("May 4, 2026"), NOW)
+        periods = [r["period"] for r in w.seed_rows(live)]
+        self.assertNotIn("2026-05", periods)
+        self.assertIn("2026-09", periods)
+        self.assertEqual(len(periods), len(w.SEED_HISTORY["2025-07"]) - 1)
 
     def test_live_period_without_a_count_keeps_the_seed(self):
         live = w.snapshot_rows(feed(ahead={
@@ -240,8 +260,18 @@ class CheckOnce(unittest.TestCase):
     def test_feed_update_beeps_and_notifies(self):
         state, beep, notify = self._run({"flpt_lastupdated": "August 1, 2026"})
         beep.assert_called_once()
-        notify.assert_called_once()
+        notify.assert_called_once_with(
+            "IRCC processing times updated",
+            "Last updated September 3, 2026 · people ahead: About 9,700 people "
+            "ahead of you · wait: 2 months left")
         self.assertEqual(state["flpt_lastupdated"], "September 3, 2026")
+
+    def test_state_records_the_watched_cohort(self):
+        state, _, _ = self._run({})
+        self.assertEqual(state["people_ahead"], "About 9,700 people ahead of you")
+        self.assertEqual(state["wait_time"], "2 months left")
+        self.assertEqual(datetime.fromisoformat(state["last_checked"]).tzinfo,
+                         timezone.utc)
 
     def test_first_run_and_unchanged_stay_quiet(self):
         for state in ({}, {"flpt_lastupdated": "September 3, 2026"}):
@@ -252,12 +282,29 @@ class CheckOnce(unittest.TestCase):
 
 class Notifications(unittest.TestCase):
     def test_notify_passes_text_as_argv(self):
+        # Pinned exactly: nothing in the suite runs osascript for real.
         with unittest.mock.patch.object(w.subprocess, "run") as run:
             w.notify('Title "q"', "msg \\ end")
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[0], "osascript")
-        self.assertEqual(argv[-2:], ['Title "q"', "msg \\ end"])
-        self.assertNotIn('Title "q"', " ".join(argv[:-2]))
+        run.assert_called_once_with(
+            ["osascript",
+             "-e", "on run argv",
+             "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+             "-e", "end run",
+             'Title "q"', "msg \\ end"],
+            check=False, timeout=10)
+
+    def test_beep_plays_the_glass_sound(self):
+        with unittest.mock.patch.object(w.subprocess, "run") as run:
+            w.beep()
+        run.assert_called_once_with(
+            ["afplay", "/System/Library/Sounds/Glass.aiff"], check=False, timeout=10)
+
+    def test_beep_falls_back_to_the_terminal_bell(self):
+        with unittest.mock.patch.object(w.subprocess, "run",
+                                        side_effect=FileNotFoundError), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            w.beep()
+        self.assertEqual(out.getvalue(), "\a")
 
     def test_timeouts_and_missing_tools_are_swallowed(self):
         for error in (FileNotFoundError(),
@@ -267,6 +314,31 @@ class Notifications(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 w.notify("t", "m")
                 w.beep()
+
+
+class Main(unittest.TestCase):
+    """--once is what launchd runs: its exit status is the only failure signal."""
+
+    def _main(self, check_once) -> tuple[int | None, str]:
+        """Run `flpt_watch.py --once`; return its exit code (None if it returned) and stderr."""
+        code = None
+        with unittest.mock.patch.object(w.sys, "argv", ["flpt_watch.py", "--once"]), \
+                unittest.mock.patch.object(w, "load_state", return_value={"k": 1}), \
+                unittest.mock.patch.object(w, "check_once", side_effect=check_once) as co, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                w.main()
+            except SystemExit as e:
+                code = e.code
+        co.assert_called_once_with({"k": 1})
+        return code, err.getvalue()
+
+    def test_once_succeeds_quietly(self):
+        self.assertEqual(self._main(lambda state: state), (None, ""))
+
+    def test_once_failure_exits_1_and_logs(self):
+        self.assertEqual(self._main(RuntimeError("curl failed")),
+                         (1, "Error checking feed: curl failed\n"))
 
 
 class FuzzSnapshots(unittest.TestCase):

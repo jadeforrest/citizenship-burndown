@@ -20,6 +20,7 @@ import os
 import random
 import re
 import tempfile
+import types
 import unittest
 import unittest.mock
 
@@ -401,8 +402,9 @@ class MainDefaults(unittest.TestCase):
         self.assertNotIn("BURN-DOWN", buf.getvalue())
 
     def test_unreadable_input_exits(self):
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit) as ctx:
             self._run_main("12, abc")
+        self.assertEqual(ctx.exception.code, 1)
 
     def test_paired_input_reports_what_was_dropped(self):
         out = self._run_main("1 2600 1 2700 2 7800")
@@ -445,6 +447,12 @@ class LoadCohorts(unittest.TestCase):
             got = b.load_cohorts(path)
         self.assertEqual(got, {"2025-07": [("2026-11", 8500.0), ("2026-10", 9000.0),
                                            ("2026-09", 9700.0)]})
+
+    def test_zero_is_a_count(self):
+        # A cohort that has fully cleared is the one figure that matters most.
+        self.assertEqual(b.history_count("0"), 0.0)
+        self.assertEqual(b.history_count("0.5"), 0.5)
+        self.assertIsNone(b.history_count("-0.5"))
 
     def test_mangled_rows_are_rejected_by_line(self):
         with tempfile.TemporaryDirectory() as d:
@@ -497,6 +505,7 @@ class CohortHelpers(unittest.TestCase):
     def test_pick_by_number_name_or_slash(self):
         cohorts = {"2025-07": [], "2025-08": []}
         menu = ["2025-07", "2025-08"]
+        self.assertEqual(b.pick_cohort("1", cohorts, menu), "2025-07")
         self.assertEqual(b.pick_cohort("2", cohorts, menu), "2025-08")
         self.assertEqual(b.pick_cohort(" 2025-07 ", cohorts, menu), "2025-07")
         self.assertEqual(b.pick_cohort("2025/08", cohorts, menu), "2025-08")
@@ -558,6 +567,7 @@ class MainWithHistory(unittest.TestCase):
         self.assertIn("Skipped unreadable rows in flpt_history.csv (lines 8, 9)", out)
         self.assertIn("Using cohort 2025-07", out)
         self.assertNotIn("Skipped", self._run(""))
+        self.assertIn("(line 8).", self._run("", SAMPLE + "Sept,2025-07,9000\n"))
 
     def test_no_analyzable_cohort_keeps_the_plain_prompt(self):
         out = self._run("", "2026-09,2025-08,11900\n")
@@ -582,6 +592,12 @@ class Color(unittest.TestCase):
         self.assertTrue(b.color_enabled(tty, {}))
         self.assertFalse(b.color_enabled(pipe, {}))
         self.assertFalse(b.color_enabled(object(), {}))
+
+    def test_defaults_to_stdout(self):
+        # Not a Mock: it would answer to any attribute name, not just isatty.
+        tty = types.SimpleNamespace(isatty=lambda: True)
+        with unittest.mock.patch.object(b.sys, "stdout", tty):
+            self.assertTrue(b.color_enabled(environ={}))
 
     def test_env_overrides(self):
         tty = unittest.mock.Mock()
