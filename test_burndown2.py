@@ -14,6 +14,7 @@ this stays a fast pre-commit check. Crank it for a longer campaign with:
 """
 
 import contextlib
+import csv
 import io
 import os
 import random
@@ -436,11 +437,49 @@ class LoadCohorts(unittest.TestCase):
                                     "2026-07,2025-07,5\n")
             self.assertEqual(b.load_cohorts(path), {"2025-07": [("2026-07", 5.0)]})
 
+    def test_hand_edits_are_normalised(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write_history(d, '2026-9,2025-7,9700\n'
+                                    '2026-10,2025-07," 9,000 "\n'
+                                    '2026/11,2025/07,8500\n')
+            got = b.load_cohorts(path)
+        self.assertEqual(got, {"2025-07": [("2026-11", 8500.0), ("2026-10", 9000.0),
+                                           ("2026-09", 9700.0)]})
+
+    def test_mangled_rows_are_rejected_by_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write_history(d, "2026-09,2025-07,9700\n"   # line 2
+                                    "Sept,2025-07,9600\n"      # 3
+                                    "2026-13,2025-07,9500\n"   # 4
+                                    "2026-08,July,9400\n"      # 5
+                                    "2026-07,2025-07,nan\n"    # 6
+                                    "2026-06,2025-07,inf\n"    # 7
+                                    "2026-05,2025-07,-5\n"     # 8
+                                    "2026-04,2025-07,abc\n"    # 9
+                                    "garbage,2025-07,\n"       # 10: blank count, quiet
+                                    "2026-08,2025-07,10100\n")
+            rejected: list[int] = []
+            got = b.load_cohorts(path, rejected)
+        self.assertEqual(got, {"2025-07": [("2026-09", 9700.0), ("2026-08", 10100.0)]})
+        self.assertEqual(rejected, [3, 4, 5, 6, 7, 8, 9])
+
     def test_missing_column_is_skipped(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "h.csv"
             path.write_text("period,cohort\n2026-09,2025-07\n")
             self.assertEqual(b.load_cohorts(path), {})
+
+
+class MonthKey(unittest.TestCase):
+    def test_accepted(self):
+        for raw, want in (("2026-09", "2026-09"), ("2026-9", "2026-09"),
+                          (" 2026/12 ", "2026-12"), ("2026-01", "2026-01")):
+            self.assertEqual(b.month_key(raw), want, raw)
+
+    def test_rejected(self):
+        for raw in ("", None, "Sept", "2026-13", "2026-0", "26-09", "2026-009",
+                    "2026-09-01", "202a-09"):
+            self.assertIsNone(b.month_key(raw), raw)
 
 
 class CohortHelpers(unittest.TestCase):
@@ -513,6 +552,12 @@ class MainWithHistory(unittest.TestCase):
     def test_default_cohort_absent_falls_back_to_default_input(self):
         out = self._run("", "2026-09,2025-08,11900\n2026-08,2025-08,12500\n")
         self.assertIn("Using the default", out)
+
+    def test_rejected_rows_are_flagged(self):
+        out = self._run("", SAMPLE + "Sept,2025-07,9000\n2026-06,2025-07,nan\n")
+        self.assertIn("Skipped unreadable rows in flpt_history.csv (lines 8, 9)", out)
+        self.assertIn("Using cohort 2025-07", out)
+        self.assertNotIn("Skipped", self._run(""))
 
     def test_no_analyzable_cohort_keeps_the_plain_prompt(self):
         out = self._run("", "2026-09,2025-08,11900\n")
@@ -686,6 +731,63 @@ class FuzzPipeline(unittest.TestCase):
                     previous = p
                     if rate * months >= current:
                         self.assertEqual(p, 1.0)
+
+    def test_load_cohorts_against_hand_edited_history(self):
+        """
+        Random history files, each row rendered the way a person might type
+        it (unpadded months, slashes, thousands separators, stray spaces) or
+        mangled outright. Checked against the ground truth the rows were made
+        from: last row wins per (cohort, period), series newest first, every
+        mangled row reported by line, and nothing ever raises.
+        """
+        rng = random.Random(20261007)
+
+        def month(year: int, mon: int) -> str:
+            sep = rng.choice("-/" if rng.random() < 0.3 else "-")
+            pad = f"{mon:02d}" if rng.random() < 0.7 else str(mon)
+            return rng.choice(["", " "]) + f"{year}{sep}{pad}" + rng.choice(["", " "])
+
+        bad_months = ["Sept", "2026-13", "2026-0", "26-09", "2026-09-01", "?"]
+        bad_counts = ["nan", "inf", "-inf", "-5", "abc", "9.7k"]
+        for i in range(self.CASES):
+            rows, expected, rejected = [], {}, []
+            for line in range(2, rng.randint(2, 40)):
+                year, mon = rng.randint(2024, 2028), rng.randint(1, 12)
+                cyear, cmon = rng.randint(2020, 2026), rng.randint(1, 12)
+                count = rng.randint(0, 200000)
+                period, cohort = month(year, mon), month(cyear, cmon)
+                text = rng.choice([str(count), f"{count:,}", f"{count}.0", f" {count} "])
+                roll = rng.random()
+                if roll < 0.1:
+                    text = ""
+                elif roll < 0.2:
+                    text = rng.choice(bad_counts)
+                elif roll < 0.25:
+                    period = rng.choice(bad_months)
+                elif roll < 0.3:
+                    cohort = rng.choice(bad_months)
+                rows.append([period, cohort, text])
+                if not text:
+                    continue
+                if roll < 0.3:
+                    rejected.append(line)
+                    continue
+                expected.setdefault(f"{cyear}-{cmon:02d}", {})[
+                    f"{year}-{mon:02d}"] = float(count)
+            with tempfile.TemporaryDirectory() as d, self.subTest(case=i, rows=rows):
+                path = Path(d) / "h.csv"
+                with path.open("w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["period", "cohort", "people_ahead"])
+                    writer.writerows(rows)
+                got_rejected: list[int] = []
+                got = b.load_cohorts(path, got_rejected)
+                self.assertEqual(got_rejected, rejected)
+                self.assertEqual(
+                    got, {c: sorted(p.items(), reverse=True)
+                          for c, p in sorted(expected.items())})
+                for series in got.values():
+                    b.missing_months([p for p, _ in series])
 
     def test_parse_round_trips_what_it_formats(self):
         rng = random.Random(20260901)

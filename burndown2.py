@@ -34,7 +34,9 @@ monthly people-ahead counts are read out newest first, as if you'd pasted them.
 """
 
 import csv
+import math
 import os
+import re
 import shutil
 import statistics
 import sys
@@ -135,23 +137,55 @@ HISTORY_PATH = Path(__file__).with_name("flpt_history.csv")
 DEFAULT_COHORT = "2025-07"
 
 
-def load_cohorts(path: Path) -> dict[str, list[tuple[str, float]]]:
+def month_key(text: str) -> str | None:
+    """
+    "2026-9", " 2026-09 " or "2026/09" as "2026-09"; None if it isn't a month.
+
+    History periods and cohorts sort as strings, so a hand-edited "2026-9"
+    left unpadded would sort after "2026-10" and silently reverse the series.
+    """
+    match = re.fullmatch(r"\s*(\d{4})[-/](\d{1,2})\s*", text or "")
+    if not match or not 1 <= int(match.group(2)) <= 12:
+        return None
+    return f"{match.group(1)}-{int(match.group(2)):02d}"
+
+
+def history_count(raw: str) -> float | None:
+    """A people-ahead cell as a count: "9,700" -> 9700.0; None unless finite and >= 0."""
+    try:
+        count = float(raw.replace(",", ""))
+    except ValueError:
+        return None
+    return count if math.isfinite(count) and count >= 0 else None
+
+
+def load_cohorts(path: Path, rejected: list[int] | None = None
+                 ) -> dict[str, list[tuple[str, float]]]:
     """
     Each cohort's (period, people ahead) series from the watcher's history,
     newest period first — the same order the prompt expects pasted numbers in.
 
     A period recorded more than once (IRCC revising a month) keeps the row
-    written last. Rows without a usable count are skipped.
+    written last. Rows with a blank count (the feed had no figure) are
+    skipped quietly; rows that look hand-mangled — a period or cohort that
+    isn't a month, a count that isn't a finite number >= 0 — are skipped and
+    their line numbers appended to `rejected`.
     """
     by_cohort: dict[str, dict[str, float]] = {}
     try:
         with path.open(newline="") as f:
-            for row in csv.DictReader(f):
-                try:
-                    count = float(row["people_ahead"])
-                except (KeyError, TypeError, ValueError):
+            reader = csv.DictReader(f)
+            for row in reader:
+                raw = (row.get("people_ahead") or "").strip()
+                if not raw:
                     continue
-                by_cohort.setdefault(row["cohort"], {})[row["period"]] = count
+                period = month_key(row.get("period"))
+                cohort = month_key(row.get("cohort"))
+                count = history_count(raw)
+                if period and cohort and count is not None:
+                    by_cohort.setdefault(cohort, {})[period] = count
+                elif rejected is not None:
+                    rejected.append(reader.line_num)
     except FileNotFoundError:
         return {}
     return {
@@ -707,7 +741,12 @@ def main() -> None:
     global COLOR
     COLOR = color_enabled()
     width = output_width()
-    cohorts = load_cohorts(HISTORY_PATH)
+    rejected: list[int] = []
+    cohorts = load_cohorts(HISTORY_PATH, rejected)
+    if rejected:
+        lines = ", ".join(map(str, rejected))
+        print(paint(wrap(f"⚠  Skipped unreadable rows in {HISTORY_PATH.name} "
+                         f"(line{'s' if len(rejected) > 1 else ''} {lines}).", width, hanging="    "), "yellow"))
     menu = cohort_menu(cohorts)
     default_cohort = DEFAULT_COHORT if DEFAULT_COHORT in menu else None
     print_prompt(cohorts, menu, default_cohort, width)

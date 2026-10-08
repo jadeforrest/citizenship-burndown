@@ -104,7 +104,10 @@ date differ from its latest row, so every published month is recorded even
 when the figures are flat. Rows are append-only; the last row for a
 (period, cohort) wins. An empty or missing file is seeded from `SEED_HISTORY`
 (hand-recorded 2025-07 months, `observed_at` = `seed`) on the next run; to
-re-seed, delete the file. Hand edits are fine — keep the header.
+re-seed, delete the file. Hand edits are fine — keep the header. `burndown2`
+normalises hand-typed months (`2026-9`, `2026/09`) and thousands separators,
+and skips rows it can't read (a period or cohort that isn't a month, a count
+that isn't a finite number >= 0), listing their line numbers above the menu.
 
 The watcher runs hourly under launchd as `com.jade.flpt-watch`
 ([com.jade.flpt-watch.plist](com.jade.flpt-watch.plist), copied to
@@ -117,8 +120,42 @@ launchctl bootout gui/$(id -u)/com.jade.flpt-watch; cp com.jade.flpt-watch.plist
 
 ## Code structure
 
-Everything lives in [burndown2.py](burndown2.py) as a small pipeline of pure
-functions plus a `main()` that wires them to stdin/stdout:
+### flpt_watch.py
+
+`check_once` fetches the feed, records history, saves state, and only then
+beeps and notifies — in that order on purpose. History is diffed against the
+CSV rather than the state, so a history failure is caught, logged to stderr
+and retried on the next run on its own; letting it escape would skip
+`save_state` and repeat the same notification every hour.
+
+- `section` / `feed_text` — the feed is someone else's JSON, so every value
+  read from it goes through these: a missing or non-object section becomes
+  `{}`, and `null` becomes `""` (anything else non-string is `str()`'d). Keep
+  that normalisation: `changed_rows` compares text, and a raw `None` would
+  differ from the `""` read back from the CSV every run.
+- `leading_number` / `feed_period` — the first number in a feed string, and
+  the `YYYY-MM` of `flpt_lastupdated`. An unreadable date falls back to the
+  current month with a warning on stderr.
+- `snapshot_rows` → `changed_rows` → `append_history`, wrapped by
+  `record_history`, which seeds an empty file via `seed_rows` first.
+
+### burndown2.py
+
+History and prompt handling, ahead of the analysis pipeline:
+
+- `month_key` — normalises a hand-typed month to `YYYY-MM` (or `None`).
+  Periods sort as strings, so an unpadded month would otherwise reverse a
+  series silently.
+- `load_cohorts(path, rejected=None)` — each cohort's series, newest first,
+  last row per period winning (`history_count` parses each count). Mangled
+  rows' line numbers go to `rejected`.
+- `missing_months`, `cohort_menu` (cohorts with two or more months),
+  `describe_cohort`, `pick_cohort` (menu number or `YYYY-MM` / `YYYY/MM`) and
+  `resolve_input`, which turns whatever was typed into a line of counts.
+- `color_enabled` / `paint` — see the colour notes above.
+
+The analysis itself is a small pipeline of pure functions, which `main()`
+wires to stdin/stdout:
 
 1. `parse_numbers` — tokenizes the raw input line (commas/whitespace/pipes/tabs
    as separators) into floats.

@@ -53,9 +53,25 @@ class Parsing(unittest.TestCase):
         self.assertIsNone(w.leading_number(None))
 
     def test_feed_period(self):
-        self.assertEqual(w.feed_period("September 3, 2026", NOW), "2026-09")
-        self.assertEqual(w.feed_period("garbled", NOW), "2026-10")
-        self.assertEqual(w.feed_period(None, NOW), "2026-10")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(w.feed_period("September 3, 2026", NOW), "2026-09")
+            self.assertEqual(err.getvalue(), "")
+            self.assertEqual(w.feed_period("Sept. 3, 2026", NOW), "2026-10")
+            self.assertEqual(w.feed_period(None, NOW), "2026-10")
+        self.assertIn("can't read flpt_lastupdated 'Sept. 3, 2026'", err.getvalue())
+        self.assertIn("recording it under 2026-10", err.getvalue())
+
+    def test_feed_text(self):
+        self.assertEqual(w.feed_text(None), "")
+        self.assertEqual(w.feed_text(9700), "9700")
+        self.assertEqual(w.feed_text("About 1"), "About 1")
+
+    def test_section_ignores_non_objects(self):
+        self.assertEqual(w.section({"a": None, "b": [1], "c": {"x": 1}}, "a"), {})
+        self.assertEqual(w.section({"b": [1]}, "b"), {})
+        self.assertEqual(w.section({"c": {"x": 1}}, "c"), {"x": 1})
+        self.assertEqual(w.section({}, "missing"), {})
 
 
 class Snapshot(unittest.TestCase):
@@ -76,6 +92,25 @@ class Snapshot(unittest.TestCase):
             feed(ahead={}, waits={"citizen-proofs-2026/09": "33 months left"}), NOW)
         self.assertEqual(rows[0]["people_ahead"], None)
         self.assertEqual(rows[0]["people_ahead_text"], "")
+
+
+    def test_null_and_non_string_values(self):
+        data = feed(ahead={"citizen-proofs-2025/07": None,
+                           "citizen-proofs-2025/08": 11900},
+                    waits={"citizen-proofs-2025/07": None})
+        rows = {r["cohort"]: r for r in w.snapshot_rows(data, NOW)}
+        self.assertEqual(rows["2025-07"]["people_ahead_text"], "")
+        self.assertIsNone(rows["2025-07"]["people_ahead"])
+        self.assertEqual(rows["2025-07"]["wait_time_text"], "")
+        self.assertEqual(rows["2025-08"]["people_ahead"], 11900)
+
+    def test_malformed_sections(self):
+        for data in ({"default-update": None, "people-ahead": None},
+                     {"default-update": {"flpt_lastupdated": None},
+                      "people-ahead": ["citizen-proofs-2025/07"]},
+                     {}):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(w.snapshot_rows(data, NOW), [], data)
 
 
 class Seed(unittest.TestCase):
@@ -140,6 +175,12 @@ class RecordHistory(unittest.TestCase):
         self.assertEqual(w.record_history(feed(), NOW, self.path), [])
         self.assertEqual(self.path.read_text(), before)
 
+    def test_null_values_dont_append_every_run(self):
+        data = feed(ahead={"citizen-proofs-2025/07": None},
+                    waits={"citizen-proofs-2025/07": None})
+        w.record_history(data, NOW, self.path)
+        self.assertEqual(w.record_history(data, NOW, self.path), [])
+
     def test_empty_file_is_treated_as_new(self):
         self.path.write_text("")
         w.record_history(feed(), NOW, self.path)
@@ -155,17 +196,46 @@ class RecordHistory(unittest.TestCase):
 
 
 class CheckOnce(unittest.TestCase):
-    def _run(self, state: dict) -> tuple[dict, unittest.mock.Mock]:
+    def _run(self, state: dict, data: dict | None = None,
+             history_error: Exception | None = None):
         with tempfile.TemporaryDirectory() as d, \
                 unittest.mock.patch.object(w, "HISTORY_PATH", Path(d) / "h.csv"), \
                 unittest.mock.patch.object(w, "STATE_PATH", Path(d) / "s.json"), \
-                unittest.mock.patch.object(w, "fetch", return_value=feed()), \
+                unittest.mock.patch.object(w, "fetch", return_value=feed()
+                                           if data is None else data), \
                 unittest.mock.patch.object(w, "beep") as beep, \
                 unittest.mock.patch.object(w, "notify") as notify, \
-                contextlib.redirect_stdout(io.StringIO()):
-            out = w.check_once(state)
-            self.assertTrue((Path(d) / "h.csv").exists())
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            # The state has to be on disk by the time anyone is told about
+            # the update, or a crash after notifying would repeat it hourly.
+            notify.side_effect = lambda *a: self.assertTrue(
+                (Path(d) / "s.json").exists())
+            if history_error:
+                with unittest.mock.patch.object(w, "record_history",
+                                                side_effect=history_error):
+                    out = w.check_once(state)
+            else:
+                out = w.check_once(state)
+                self.assertTrue((Path(d) / "h.csv").exists())
+            self.assertEqual(w.load_state(), out)
+        self.err = err.getvalue()
         return out, beep, notify
+
+    def test_history_failure_still_saves_state_and_notifies_once(self):
+        state, beep, notify = self._run({"flpt_lastupdated": "August 1, 2026"},
+                                        history_error=TypeError("boom"))
+        self.assertEqual(state["flpt_lastupdated"], "September 3, 2026")
+        notify.assert_called_once()
+        self.assertIn("history: not recorded: TypeError('boom')", self.err)
+
+    def test_malformed_feed_does_not_raise(self):
+        data = {"default-update": None,
+                "people-ahead": {"citizen-proofs-2025/07": 9700},
+                "wait-times": {"citizen-proofs-2025/07": None}}
+        state, _, notify = self._run({"flpt_lastupdated": "August 1, 2026"}, data)
+        self.assertIsNone(state["flpt_lastupdated"])
+        notify.assert_called_once()
 
     def test_feed_update_beeps_and_notifies(self):
         state, beep, notify = self._run({"flpt_lastupdated": "August 1, 2026"})
@@ -180,6 +250,25 @@ class CheckOnce(unittest.TestCase):
             notify.assert_not_called()
 
 
+class Notifications(unittest.TestCase):
+    def test_notify_passes_text_as_argv(self):
+        with unittest.mock.patch.object(w.subprocess, "run") as run:
+            w.notify('Title "q"', "msg \\ end")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[0], "osascript")
+        self.assertEqual(argv[-2:], ['Title "q"', "msg \\ end"])
+        self.assertNotIn('Title "q"', " ".join(argv[:-2]))
+
+    def test_timeouts_and_missing_tools_are_swallowed(self):
+        for error in (FileNotFoundError(),
+                      w.subprocess.TimeoutExpired("x", 10)):
+            with unittest.mock.patch.object(w.subprocess, "run",
+                                            side_effect=error), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                w.notify("t", "m")
+                w.beep()
+
+
 class FuzzSnapshots(unittest.TestCase):
     """
     Random feed sequences recorded one after another.
@@ -191,18 +280,34 @@ class FuzzSnapshots(unittest.TestCase):
 
     CASES = int(os.environ.get("FLPT_FUZZ_CASES", "40"))
 
+    # Mostly well-formed, but the feed is someone else's JSON: nulls, bare
+    # numbers and nested values are all things it could start sending.
+    @staticmethod
+    def _value(rng: random.Random, good: list[str]):
+        return rng.choice(good * 4 + [None, rng.randint(0, 50000), [1], {"a": 1}])
+
     def _snapshot(self, rng: random.Random, month: int) -> dict:
         cohorts = rng.sample([f"202{y}/{m:02d}" for y in range(6) for m in range(1, 13)],
                              rng.randint(0, 6))
-        ahead = {f"citizen-proofs-{c}": rng.choice(
-            [f"About {rng.randint(0, 200000):,} people ahead of you",
-             "Less than 100 people ahead of you", "No data available"])
+        ahead = {f"citizen-proofs-{c}": self._value(rng, [
+            f"About {rng.randint(0, 200000):,} people ahead of you",
+            "Less than 100 people ahead of you", "No data available"])
             for c in cohorts}
-        waits = {f"citizen-proofs-{c}": rng.choice(
-            ["2 months left", "About 1 month left", "No data available"])
+        waits = {f"citizen-proofs-{c}": self._value(rng, [
+            "2 months left", "About 1 month left", "No data available"])
             for c in cohorts if rng.random() < 0.8}
-        date = datetime(2026, 1 + month % 12, rng.randint(1, 28))
-        return feed(f"{date:%B} {date.day}, {date.year}", ahead, waits)
+        # Runs of up to ~30 months, so sequences cross into later years.
+        date = datetime(2026 + month // 12, 1 + month % 12, rng.randint(1, 28))
+        data = feed(f"{date:%B} {date.day}, {date.year}", ahead, waits)
+        roll = rng.random()
+        if roll < 0.04:
+            data["default-update"] = None
+        elif roll < 0.08:
+            data["default-update"] = {"flpt_lastupdated": rng.choice(
+                [None, 20260903, f"{date:%b}. {date.day}, {date.year}"])}
+        elif roll < 0.1:
+            data["people-ahead"] = None
+        return data
 
     def test_invariants(self):
         rng = random.Random(1234)
@@ -214,12 +319,13 @@ class FuzzSnapshots(unittest.TestCase):
                     for period, count in figures:
                         expected[(seed_cohort, period)] = count
                 month = 0
-                for _ in range(rng.randint(1, 8)):
-                    month += rng.choice([0, 1, 1, 2])
+                for _ in range(rng.randint(1, 16)):
+                    month += rng.choice([0, 1, 1, 2, 3])
                     data = self._snapshot(rng, month)
-                    w.record_history(data, NOW, path)
-                    self.assertEqual(w.record_history(data, NOW, path), [], case)
-                    live = w.snapshot_rows(data, NOW)
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        w.record_history(data, NOW, path)
+                        self.assertEqual(w.record_history(data, NOW, path), [], case)
+                        live = w.snapshot_rows(data, NOW)
                     latest = {r["cohort"]: r for r in read_csv(path)}
                     for row in live:
                         got = latest[row["cohort"]]
@@ -233,6 +339,26 @@ class FuzzSnapshots(unittest.TestCase):
                 for series in loaded.values():
                     periods = [p for p, _ in series]
                     self.assertEqual(periods, sorted(set(periods), reverse=True))
+                    burndown2.missing_months(periods)
+
+    def test_check_once_survives_any_snapshot(self):
+        rng = random.Random(4321)
+        for case in range(self.CASES):
+            data = self._snapshot(rng, rng.randint(0, 40))
+            prev = {"flpt_lastupdated": rng.choice([None, "August 1, 2026"])}
+            with tempfile.TemporaryDirectory() as d, \
+                    unittest.mock.patch.object(w, "HISTORY_PATH", Path(d) / "h.csv"), \
+                    unittest.mock.patch.object(w, "STATE_PATH", Path(d) / "s.json"), \
+                    unittest.mock.patch.object(w, "fetch", return_value=data), \
+                    unittest.mock.patch.object(w, "beep"), \
+                    unittest.mock.patch.object(w, "notify"), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                state = w.check_once(dict(prev))
+                self.assertEqual(w.load_state()["flpt_lastupdated"],
+                                 state["flpt_lastupdated"], case)
+                # Whatever the feed sent, history recording shouldn't fail.
+                self.assertNotIn("not recorded", err.getvalue(), case)
 
 
 if __name__ == "__main__":

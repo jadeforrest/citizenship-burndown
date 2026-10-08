@@ -87,6 +87,8 @@ def beep() -> None:
         )
     except FileNotFoundError:
         print("\a", end="", flush=True)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def notify(title: str, message: str) -> None:
@@ -103,8 +105,19 @@ def notify(title: str, message: str) -> None:
             check=False,
             timeout=10,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
+
+
+def section(data: dict, key: str) -> dict:
+    """A top-level object from the feed, or {} if it's missing or not an object."""
+    value = data.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def feed_text(value) -> str:
+    """A feed value as text: null becomes "", anything else non-string is str()'d."""
+    return "" if value is None else str(value)
 
 
 def leading_number(text: str | None) -> int | None:
@@ -114,19 +127,28 @@ def leading_number(text: str | None) -> int | None:
 
 
 def feed_period(last_updated: str | None, fallback: datetime) -> str:
-    """YYYY-MM for a flpt_lastupdated like "September 3, 2026"."""
+    """
+    YYYY-MM for a flpt_lastupdated like "September 3, 2026".
+
+    An unreadable date falls back to the month the watcher ran in, which can
+    file a late-month update under the following month — so say so loudly
+    (stderr ends up in the launchd log).
+    """
     try:
         return datetime.strptime(last_updated or "", "%B %d, %Y").strftime("%Y-%m")
     except ValueError:
-        return fallback.strftime("%Y-%m")
+        period = fallback.strftime("%Y-%m")
+        print(f"warning: can't read flpt_lastupdated {last_updated!r}; "
+              f"recording it under {period}", file=sys.stderr)
+        return period
 
 
 def snapshot_rows(data: dict, observed_at: datetime) -> list[dict]:
     """One history row per citizen-proofs-202x/* cohort in the feed."""
-    last_updated = data.get("default-update", {}).get("flpt_lastupdated")
+    last_updated = feed_text(section(data, "default-update").get("flpt_lastupdated"))
     period = feed_period(last_updated, observed_at)
-    ahead = data.get("people-ahead", {})
-    waits = data.get("wait-times", {})
+    ahead = {k: feed_text(v) for k, v in section(data, "people-ahead").items()}
+    waits = {k: feed_text(v) for k, v in section(data, "wait-times").items()}
     rows = []
     for key in sorted(set(ahead) | set(waits)):
         match = COHORT_KEY.match(key)
@@ -139,7 +161,7 @@ def snapshot_rows(data: dict, observed_at: datetime) -> list[dict]:
             "wait_months": leading_number(waits.get(key)),
             "people_ahead_text": ahead.get(key, ""),
             "wait_time_text": waits.get(key, ""),
-            "flpt_lastupdated": last_updated or "",
+            "flpt_lastupdated": last_updated,
             "observed_at": observed_at.isoformat(timespec="seconds"),
         })
     return rows
@@ -215,9 +237,9 @@ def record_history(data: dict, observed_at: datetime,
 
 def check_once(state: dict) -> dict:
     data = fetch()
-    last_updated = data.get("default-update", {}).get("flpt_lastupdated")
-    people_ahead = data.get("people-ahead", {}).get(FIELD_KEY)
-    wait_time = data.get("wait-times", {}).get(FIELD_KEY)
+    last_updated = section(data, "default-update").get("flpt_lastupdated")
+    people_ahead = section(data, "people-ahead").get(FIELD_KEY)
+    wait_time = section(data, "wait-times").get(FIELD_KEY)
 
     observed = datetime.now(timezone.utc)
     now = observed.isoformat(timespec="seconds")
@@ -226,25 +248,34 @@ def check_once(state: dict) -> dict:
     changed = prev_last_updated is not None and last_updated != prev_last_updated
     if changed:
         print(f"[{now}] flpt_lastupdated changed: {prev_last_updated!r} -> {last_updated!r}")
-        beep()
-        notify(
-            "IRCC processing times updated",
-            f"Last updated {last_updated} · people ahead: {people_ahead} · wait: {wait_time}",
-        )
     else:
         print(f"[{now}] flpt_lastupdated unchanged: {last_updated!r}")
 
     print(f"[{now}] {FIELD_KEY} people ahead: {people_ahead!r}")
     print(f"[{now}] {FIELD_KEY} wait time:    {wait_time!r}")
 
-    written = record_history(data, observed, HISTORY_PATH)
-    print(f"[{now}] history: {len(written)} row(s) appended to {HISTORY_PATH.name}")
+    # History is compared against the file, not the state, so a failure here
+    # is retried next run on its own. It mustn't stop the state being saved,
+    # or the same update would beep and notify again every hour.
+    try:
+        written = record_history(data, observed, HISTORY_PATH)
+        print(f"[{now}] history: {len(written)} row(s) appended to {HISTORY_PATH.name}")
+    except Exception as e:
+        print(f"[{now}] history: not recorded: {e!r}", file=sys.stderr)
 
     state["flpt_lastupdated"] = last_updated
     state["people_ahead"] = people_ahead
     state["wait_time"] = wait_time
     state["last_checked"] = now
     save_state(state)
+
+    # Announce only once the state is saved, for the same reason.
+    if changed:
+        beep()
+        notify(
+            "IRCC processing times updated",
+            f"Last updated {last_updated} · people ahead: {people_ahead} · wait: {wait_time}",
+        )
     return state
 
 
