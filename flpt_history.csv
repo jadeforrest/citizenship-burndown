@@ -81,6 +81,11 @@ period,cohort,people_ahead,wait_months,people_ahead_text,wait_time_text,flpt_las
 2026-09,2025-12,22400,5,"About 22,400 people ahead of you",5 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2026-01,24300,6,"About 24,300 people ahead of you",6 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2026-02,27400,7,"About 27,400 people ahead of you",7 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
+2026-04,2026-03,54000,9,"About 54,000 people ahead of you",9 months left,"April 7, 2026",manual
+2026-05,2026-03,63200,11,"About 63,200 people ahead of you",11 months left,"May 12, 2026",manual
+2026-06,2026-03,33500,6,"About 33,500 people ahead of you",6 months left,"June 8, 2026",manual
+2026-07,2026-03,32600,6,"About 32,600 people ahead of you",6 months left,"July 7, 2026",manual
+2026-08,2026-03,32300,7,"About 32,300 people ahead of you",7 months left,"August 10, 2026",manual
 2026-09,2026-03,31700,8,"About 31,700 people ahead of you",8 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2026-04,100200,25,"About 100,200 people ahead of you",25 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2026-05,113200,28,"About 113,200 people ahead of you",28 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
@@ -88,3 +93,85 @@ period,cohort,people_ahead,wait_months,people_ahead_text,wait_time_text,flpt_las
 2026-09,2026-07,132200,32,"About 132,200 people ahead of you",32 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2026-08,134000,33,"About 134,000 people ahead of you",33 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2026-09,136000,33,"About 136,000 people ahead of you",33 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
+2026-10,2020-01,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-02,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-03,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-04,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-05,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-06,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-07,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-08,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-09,100,,Less than 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-10,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-11,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2020-12,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-01,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-02,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-03,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-04,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-05,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-06,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-07,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-08,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-09,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-10,100,,About 100 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-11,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2021-12,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-01,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-02,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-03,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-04,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-05,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-06,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-07,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-08,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-09,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-10,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-11,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2022-12,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-01,200,,About 200 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-02,300,,About 300 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-03,300,,About 300 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-04,300,,About 300 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-05,300,,About 300 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-06,300,,About 300 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-07,400,,About 400 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-08,400,,About 400 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-09,400,,About 400 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-10,500,,About 500 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-11,500,,About 500 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2023-12,500,,About 500 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-01,600,,About 600 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-02,600,,About 600 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-03,600,,About 600 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-04,700,,About 700 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-05,700,,About 700 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-06,800,,About 800 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-07,900,,About 900 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-08,900,,About 900 people ahead of you,We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-09,1000,,"About 1,000 people ahead of you",We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-10,1100,,"About 1,100 people ahead of you",We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-11,1200,,"About 1,200 people ahead of you",We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2024-12,1300,,"About 1,300 people ahead of you",We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-01,1600,,"About 1,600 people ahead of you",We need more time to process your application,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-02,2100,1,"About 2,100 people ahead of you",About 1 month left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-03,3300,1,"About 3,300 people ahead of you",About 1 month left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-04,4700,1,"About 4,700 people ahead of you",About 1 month left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-05,6300,2,"About 6,300 people ahead of you",2 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-06,7800,2,"About 7,800 people ahead of you",2 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-07,9300,2,"About 9,300 people ahead of you",2 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-08,11500,3,"About 11,500 people ahead of you",3 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-09,14000,4,"About 14,000 people ahead of you",4 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-10,16700,4,"About 16,700 people ahead of you",4 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-11,19300,5,"About 19,300 people ahead of you",5 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2025-12,21800,6,"About 21,800 people ahead of you",6 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-01,23700,6,"About 23,700 people ahead of you",6 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-02,26800,7,"About 26,800 people ahead of you",7 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-03,31100,8,"About 31,100 people ahead of you",8 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-04,38500,10,"About 38,500 people ahead of you",10 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-05,49300,13,"About 49,300 people ahead of you",13 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-06,64000,17,"About 64,000 people ahead of you",17 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-07,116100,30,"About 116,100 people ahead of you",30 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-08,126800,33,"About 126,800 people ahead of you",33 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-09,128700,34,"About 128,700 people ahead of you",34 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
+2026-10,2026-10,130700,34,"About 130,700 people ahead of you",34 months left,"October 9, 2026",2026-10-13T14:17:32+00:00
