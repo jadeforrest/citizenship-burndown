@@ -72,6 +72,16 @@ period,cohort,people_ahead,wait_months,people_ahead_text,wait_time_text,flpt_las
 2026-09,2025-03,3600,1,"About 3,600 people ahead of you",About 1 month left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2025-04,5100,1,"About 5,100 people ahead of you",About 1 month left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2025-05,6700,2,"About 6,700 people ahead of you",2 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
+2025-11,2025-06,15700,,,,,manual
+2025-12,2025-06,14800,,,,,manual
+2026-01,2025-06,13900,,,,,manual
+2026-02,2025-06,12500,,,,,manual
+2026-03,2025-06,11100,,,,,manual
+2026-04,2025-06,9900,,,,,manual
+2026-05,2025-06,9500,,,,,manual
+2026-06,2025-06,8800,,,,,manual
+2026-07,2025-06,8600,,,,,manual
+2026-08,2025-06,8400,,,,,manual
 2026-09,2025-06,8100,2,"About 8,100 people ahead of you",2 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2025-07,9700,2,"About 9,700 people ahead of you",2 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
 2026-09,2025-08,11900,3,"About 11,900 people ahead of you",3 months left,"September 3, 2026",2026-10-08T02:03:43+00:00
