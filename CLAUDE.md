@@ -151,7 +151,12 @@ History and prompt handling, ahead of the analysis pipeline:
   rows' line numbers go to `rejected`.
 - `missing_months`, `cohort_menu` (cohorts with two or more months),
   `describe_cohort`, `pick_cohort` (menu number or `YYYY-MM` / `YYYY/MM`) and
-  `resolve_input`, which turns whatever was typed into a line of counts.
+  `resolve_input`, which turns whatever was typed into a line of counts plus
+  the cohort it came from (`None` for pasted counts).
+- `own_cohort` → `OwnCohort` — a cohort's own still-waiting count per period:
+  the next month's cohort's people-ahead minus this one's, for periods both
+  have. `main()` passes it to `analyze(..., own=)` only when a cohort was
+  picked (not for pasted counts).
 - `color_enabled` / `paint` — see the colour notes above.
 
 The analysis itself is a small pipeline of pure functions, which `main()`
@@ -190,12 +195,22 @@ wires to stdin/stdout:
    forward-looking rows). It's the inverse of the quantile tables: those map a
    probability to a time, this maps a time to a probability. A test pins the
    two together, so change them as a pair.
+8. `print_own_cohort` — when `analyze` got an `OwnCohort`, a block after the
+   look-back: `own_windows` gives the compounded monthly clearance
+   (`shrink_rate`) of your own cohort beside the people-ahead rate, over the
+   `OWN_WINDOWS` trailing windows plus the full span. Single months are
+   deliberately not shown: IRCC rounds to the nearest 100, so one month of a
+   ~2,000-person cohort is mostly rounding. With fewer than two shared months
+   (e.g. the newest cohort) it prints a note and the people-ahead odds stand
+   alone. The look-ahead still uses the people-ahead model.
 
 The key modelling assumption: the input counts are *people ahead of you*, and
 under uniform random processing every file in the queue has the same per-month
 draw probability. So the fraction of the ahead-of-you cohort that cleared in a
 month is also your own odds for that month — no need to know the size of the
-queue behind you.
+queue behind you. The history shows that assumption doesn't hold: older
+cohorts clear much faster than newer ones, which is why the own-cohort block
+exists — it only assumes random order *within* your application month.
 
 `print_scenarios`, `print_lookback` and `print_lookahead` own the layout.
 The last two size their columns from the data (and fall back to abbreviated

@@ -42,6 +42,7 @@ import statistics
 import sys
 import textwrap
 from pathlib import Path
+from typing import NamedTuple
 
 
 def parse_numbers(raw: str) -> list[float]:
@@ -194,15 +195,82 @@ def load_cohorts(path: Path, rejected: list[int] | None = None
     }
 
 
+def month_index(period: str) -> int:
+    """A YYYY-MM month as a count of months, so months subtract."""
+    year, month = period.split("-")
+    return int(year) * 12 + int(month) - 1
+
+
+def month_label(index: int) -> str:
+    """The inverse of month_index."""
+    return f"{index // 12}-{index % 12 + 1:02d}"
+
+
 def missing_months(periods: list[str]) -> list[str]:
     """YYYY-MM months absent between the oldest and newest of `periods`."""
-    def index(period: str) -> int:
-        year, month = period.split("-")
-        return int(year) * 12 + int(month) - 1
-
-    present = {index(p) for p in periods}
-    return [f"{i // 12}-{i % 12 + 1:02d}"
+    present = {month_index(p) for p in periods}
+    return [month_label(i)
             for i in range(min(present), max(present) + 1) if i not in present]
+
+
+class OwnCohort(NamedTuple):
+    """A cohort's own still-waiting count beside its people-ahead count."""
+    cohort: str
+    waiting: dict[str, float]   # period -> applicants from this month still waiting
+    ahead: dict[str, float]     # period -> people ahead of them
+
+
+def own_cohort(cohorts: dict[str, list[tuple[str, float]]],
+               cohort: str) -> OwnCohort:
+    """
+    The applicants from `cohort` itself still waiting, period by period.
+
+    The next month's cohort counts everyone who applied before it, so its
+    people-ahead minus this cohort's is this cohort's own pending files. Only
+    periods where both cohorts have a figure are included.
+    """
+    ahead = dict(cohorts.get(cohort, []))
+    after = dict(cohorts.get(month_label(month_index(cohort) + 1), []))
+    waiting = {p: after[p] - count for p, count in ahead.items() if p in after}
+    return OwnCohort(cohort, waiting, ahead)
+
+
+def shrink_rate(start: float, end: float, months: int) -> float | None:
+    """
+    Average share cleared per month, compounded, going from `start` to `end`
+    over `months`: 2,500 -> 2,200 over 9 months is 1.4% a month. Negative
+    when the count grew; None when there's nothing to measure.
+    """
+    if start <= 0 or end < 0 or months <= 0:
+        return None
+    return 1 - (end / start) ** (1 / months)
+
+
+# Trailing windows (in months) for the own-cohort rates, shown alongside the
+# full span of the data. Published counts are rounded to the nearest 100, so a
+# single month of a cohort a couple of thousand strong is mostly rounding.
+OWN_WINDOWS = (3, 6)
+
+
+def own_windows(own: OwnCohort) -> list[tuple[int, float | None, float | None]]:
+    """
+    (months, own-cohort rate, people-ahead rate) over each trailing window
+    ending at the newest period with an own-cohort figure, shortest first and
+    the full span last. Windows whose starting month is missing are skipped.
+    """
+    if len(own.waiting) < 2:
+        return []
+    periods = sorted(own.waiting)
+    last = month_index(periods[-1])
+    span = last - month_index(periods[0])
+    rows = []
+    for n in [w for w in OWN_WINDOWS if w < span] + [span]:
+        start = month_label(last - n)
+        if start in own.waiting:
+            rows.append((n,
+                         shrink_rate(own.waiting[start], own.waiting[periods[-1]], n),
+                         shrink_rate(own.ahead[start], own.ahead[periods[-1]], n)))
+    return rows
 
 
 def cohort_menu(cohorts: dict[str, list[tuple[str, float]]]) -> list[str]:
@@ -517,6 +585,58 @@ def print_lookahead(
         print(f"    {label:{label_w}}{cells}")
 
 
+def rate_cell(rate: float | None) -> tuple[str, tuple[str, ...]]:
+    """Text and tone for a shrink_rate() result."""
+    if rate is None:
+        return "n/a", ()
+    if rate < 0:
+        return "grew", ("yellow",)
+    return fmt_pct(rate), ()
+
+
+def print_own_cohort(own: OwnCohort, width: int) -> None:
+    """Your cohort's own monthly clearance, beside the people-ahead rate."""
+    later = month_label(month_index(own.cohort) + 1)
+    print(paint(wrap(f"Your own cohort ({own.cohort})", width, indent="  ",
+                     hanging="  "), "bold"))
+    rows = own_windows(own)
+    if not rows:
+        print(wrap(f"No {later} figures for the same months, so there's no "
+                   "own-cohort rate; the chances above count everyone ahead "
+                   "of you.", width, indent="    ", hanging="    "))
+        return
+    print(wrap(f"Everyone from {own.cohort} still waiting is {later}'s people "
+               "ahead minus yours. If files within a month are pulled in "
+               "random order, the share of them cleared each month is your "
+               "chance, however much older files are put first.",
+               width, indent="    ", hanging="    "))
+    first, last = min(own.waiting), max(own.waiting)
+    print(stat_line("Still waiting",
+                    f"{own.waiting[first]:,.0f} in {first} -> "
+                    f"{own.waiting[last]:,.0f} in {last}",
+                    width, "    ", pad=16, style=()))
+
+    # Try the spelled-out headings first, then abbreviations if they overflow.
+    for corner, own_h, ahead_h, long in (
+            ("per month", "your cohort", "people ahead", True),
+            ("/mo", "cohort", "ahead", False)):
+        labels = [(f"last {n} months" if n > 1 else "last month") if long
+                  else f"{n} mo" for n, _, _ in rows]
+        label_w = max(len(s) for s in labels)   # each outruns its corner
+        own_w, ahead_w = max(len(own_h), 6), max(len(ahead_h), 6)
+        if 4 + label_w + 2 + own_w + 2 + ahead_w <= width:
+            break
+    print(paint(f"    {corner:<{label_w}}  {own_h:>{own_w}}  "
+                f"{ahead_h:>{ahead_w}}", "dim"))
+    for label, (_, mine, theirs) in zip(labels, rows):
+        (mine_t, mine_tone), (theirs_t, theirs_tone) = rate_cell(mine), rate_cell(theirs)
+        print(f"    {label:<{label_w}}  " + paint(f"{mine_t:>{own_w}}", *mine_tone)
+              + "  " + paint(f"{theirs_t:>{ahead_w}}", *theirs_tone))
+    print(wrap("IRCC rounds these counts to the nearest 100, so a single "
+               "month of one cohort is mostly noise; the longer windows are "
+               "steadier.", width, indent="    ", hanging="    "))
+
+
 def random_order_odds(
     current: float,
     chrono: list[float],
@@ -525,6 +645,7 @@ def random_order_odds(
     recent: float,
     recent_n: int,
     width: int,
+    own: OwnCohort | None = None,
 ) -> None:
     """Print the per-month odds section (backward look, then forward look)."""
     print("\n" + paint("Random-order odds", "bold", "cyan"))
@@ -555,11 +676,16 @@ def random_order_odds(
                    f"average was {fmt_pct(statistics.mean(seen))}.",
                    width, indent="    ", hanging="    "))
 
+    if own is not None:
+        print()
+        print_own_cohort(own, width)
+
     print()
     print_lookahead(current, mean, recent, recent_n, width)
 
 
-def analyze(entered: list[float], width: int | None = None) -> None:
+def analyze(entered: list[float], width: int | None = None,
+            own: OwnCohort | None = None) -> None:
     if len(entered) < 2:
         print("Need at least two months to compute a rate.")
         return
@@ -677,7 +803,8 @@ def analyze(entered: list[float], width: int | None = None) -> None:
         width,
     )
 
-    random_order_odds(current, chrono, processed, mean, recent, recent_n, width)
+    random_order_odds(current, chrono, processed, mean, recent, recent_n, width,
+                      own)
     print(paint("=" * width, "cyan") + "\n")
 
 
@@ -723,8 +850,11 @@ def print_prompt(cohorts: dict, menu: list[str], default_cohort: str | None,
 
 
 def resolve_input(raw: str, cohorts: dict, menu: list[str],
-                  default_cohort: str | None, width: int) -> str:
-    """Turn what was typed (blank, a cohort, or counts) into a line of counts."""
+                  default_cohort: str | None, width: int) -> tuple[str, str | None]:
+    """
+    Turn what was typed (blank, a cohort, or counts) into a line of counts,
+    and the cohort it came from (None for pasted counts).
+    """
     if not raw.strip() and default_cohort:
         raw = default_cohort
     elif not raw.strip():
@@ -734,7 +864,7 @@ def resolve_input(raw: str, cohorts: dict, menu: list[str],
     cohort = pick_cohort(raw, cohorts, menu)
     if cohort:
         raw = cohort_numbers(cohort, cohorts[cohort], width)
-    return raw
+    return raw, cohort
 
 
 def main() -> None:
@@ -757,7 +887,7 @@ def main() -> None:
         print("\nCancelled.")
         return
 
-    raw = resolve_input(raw, cohorts, menu, default_cohort, width)
+    raw, cohort = resolve_input(raw, cohorts, menu, default_cohort, width)
 
     try:
         tokens = parse_numbers(raw)
@@ -774,7 +904,10 @@ def main() -> None:
         print(wrap("Ignored: " + ", ".join(f"{v:,.0f}" for v in dropped),
                    width, indent="  ", hanging="      "))
 
-    analyze(numbers, width)
+    # A cohort's counts never look like a two-column paste in practice, but if
+    # one did, the counts analyzed would no longer be that cohort's.
+    own = own_cohort(cohorts, cohort) if cohort and not dropped else None
+    analyze(numbers, width, own)
 
 
 if __name__ == "__main__":

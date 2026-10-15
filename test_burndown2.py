@@ -42,12 +42,26 @@ COMPACT = b.COMPACT_TABLE
 STACKED = b.MIN_WIDTH
 
 
-def run_analyze(entered: list[float], width: int = WIDE) -> str:
+def run_analyze(entered: list[float], width: int = WIDE,
+                own: "b.OwnCohort | None" = None) -> str:
     """Call analyze() and capture what it printed."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        b.analyze(entered, width)
+        b.analyze(entered, width, own)
     return buf.getvalue()
+
+
+# The 2025-07 cohort and the 2025-08 cohort behind it, as recorded for
+# 2026-01..2026-10: own-cohort counts 2,500 -> 2,200 over 9 months.
+JULY = [15800.0, 14500, 13000, 11700, 11300, 10500, 10200, 10100, 9700, 9300]
+AUGUST = [18300.0, 16900, 15300, 14000, 13500, 12800, 12400, 12300, 11900, 11500]
+PERIODS = [f"2026-{m:02d}" for m in range(1, 11)]
+JULY_COHORTS = {
+    "2025-07": sorted(zip(PERIODS, JULY), reverse=True),
+    "2025-08": sorted(zip(PERIODS, AUGUST), reverse=True),
+}
+JULY_OWN = b.own_cohort(JULY_COHORTS, "2025-07")
+JULY_ENTERED = list(reversed(JULY))
 
 
 class ParseNumbers(unittest.TestCase):
@@ -521,6 +535,97 @@ class CohortHelpers(unittest.TestCase):
                       b.describe_cohort("x", [("2026-09", 5.0)]))
 
 
+class OwnCohortRates(unittest.TestCase):
+    def test_month_index_round_trips_across_years(self):
+        for i in range(2019 * 12, 2031 * 12):
+            self.assertEqual(b.month_index(b.month_label(i)), i)
+        self.assertEqual(b.month_index("2026-01") - b.month_index("2025-12"), 1)
+
+    def test_waiting_is_the_gap_to_the_next_cohort(self):
+        self.assertEqual(JULY_OWN.waiting["2026-01"], 2500)
+        self.assertEqual(JULY_OWN.waiting["2026-10"], 2200)
+        self.assertEqual(JULY_OWN.ahead["2026-10"], 9300)
+
+    def test_only_months_both_cohorts_have(self):
+        cohorts = {"2025-12": [("2026-02", 10.0), ("2026-01", 20.0)],
+                   "2026-01": [("2026-02", 50.0), ("2025-12", 70.0)]}
+        own = b.own_cohort(cohorts, "2025-12")   # next cohort across a year end
+        self.assertEqual(own.waiting, {"2026-02": 40.0})
+        self.assertEqual(b.own_cohort(cohorts, "2026-01").waiting, {})
+        self.assertEqual(b.own_cohort({}, "2026-01"), b.OwnCohort("2026-01", {}, {}))
+
+    def test_shrink_rate(self):
+        self.assertAlmostEqual(b.shrink_rate(2500, 2200, 9), 0.01410, places=5)
+        self.assertAlmostEqual(b.shrink_rate(100, 50, 1), 0.5)
+        self.assertEqual(b.shrink_rate(100, 0, 3), 1.0)
+        self.assertEqual(b.shrink_rate(100, 100, 3), 0.0)
+        self.assertLess(b.shrink_rate(100, 200, 1), 0)
+        for args in ((0, 10, 1), (-5, 10, 1), (10, -1, 1), (10, 5, 0)):
+            self.assertIsNone(b.shrink_rate(*args), args)
+
+    def test_windows_shortest_first_full_span_last(self):
+        rows = b.own_windows(JULY_OWN)
+        self.assertEqual([n for n, _, _ in rows], [3, 6, 9])
+        rates = {n: (round(mine, 4), round(theirs, 4)) for n, mine, theirs in rows}
+        self.assertEqual(rates[3], (0.0, round(1 - (9300 / 10200) ** (1 / 3), 4)))
+        self.assertEqual(rates[6][0], round(1 - (2200 / 2300) ** (1 / 6), 4))
+        self.assertEqual(rates[9], (0.0141, 0.0572))
+
+    def test_short_span_gives_only_the_full_window(self):
+        for span in (1, 3):
+            own = b.OwnCohort("x", {"2026-01": 100.0, b.month_label(
+                b.month_index("2026-01") + span): 90.0}, {})
+            own = own._replace(ahead={p: 1000.0 for p in own.waiting})
+            self.assertEqual([n for n, _, _ in b.own_windows(own)], [span])
+
+    def test_window_with_a_missing_start_month_is_skipped(self):
+        waiting = {p: 100.0 for p in PERIODS if p != "2026-07"}
+        own = b.OwnCohort("x", waiting, dict(waiting))
+        self.assertEqual([n for n, _, _ in b.own_windows(own)], [6, 9])
+
+    def test_too_little_data_has_no_windows(self):
+        self.assertEqual(b.own_windows(b.OwnCohort("x", {}, {})), [])
+        self.assertEqual(b.own_windows(b.OwnCohort("x", {"2026-01": 5.0},
+                                                   {"2026-01": 9.0})), [])
+
+    def test_rate_cell(self):
+        self.assertEqual(b.rate_cell(None), ("n/a", ()))
+        self.assertEqual(b.rate_cell(-0.2), ("grew", ("yellow",)))
+        self.assertEqual(b.rate_cell(0.0141), ("1.4%", ()))
+
+    def test_report_section(self):
+        out = run_analyze(JULY_ENTERED, own=JULY_OWN)
+        self.assertIn("Your own cohort (2025-07)", out)
+        self.assertIn("2,500 in 2026-01 -> 2,200 in 2026-10", out)
+        row = [ln.split() for ln in out.splitlines() if "last 9 months" in ln]
+        self.assertEqual(row, [["last", "9", "months", "1.4%", "5.7%"]])
+        # It sits between the look-back summary and the look-ahead.
+        self.assertLess(out.index("Across the 9 months"), out.index("Your own"))
+        self.assertLess(out.index("Your own"), out.index("Looking ahead"))
+
+    def test_absent_without_a_cohort(self):
+        self.assertNotIn("Your own cohort", run_analyze(JULY_ENTERED))
+
+    def test_fallback_note_without_the_next_cohort(self):
+        own = b.own_cohort({"2025-07": JULY_COHORTS["2025-07"]}, "2025-07")
+        out = run_analyze(JULY_ENTERED, own=own)
+        self.assertIn("No 2025-08 figures for the same months", out)
+        self.assertNotIn("Still waiting", out)
+
+    def test_fits_and_strips_cleanly_at_every_width(self):
+        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
+            with self.subTest(width=width):
+                out = run_analyze(JULY_ENTERED, width, JULY_OWN)
+                self.assertLessEqual(max(map(len, out.splitlines())), width)
+                with unittest.mock.patch.object(b, "COLOR", True):
+                    colored = run_analyze(JULY_ENTERED, width, JULY_OWN)
+                self.assertEqual(ANSI.sub("", colored), out)
+                rates = ("0.0%", "3.0%", "0.7%", "3.8%", "1.4%", "5.7%")
+                section = out[out.index("Your own"):out.index("Looking ahead")]
+                for rate in rates:
+                    self.assertIn(rate, section)
+
+
 SAMPLE = ("2026-07,2025-07,10500\n2026-08,2025-07,10200\n2026-09,2025-07,9700\n"
           "2026-09,2025-08,11900\n2026-08,2025-08,12500\n"
           "2026-09,2025-09,14400\n")
@@ -553,6 +658,19 @@ class MainWithHistory(unittest.TestCase):
         out = self._run("500, 900, 1400")
         self.assertNotIn("Using cohort", out)
         self.assertIn("1,400 -> 900 -> 500", out)
+        self.assertNotIn("Your own cohort", out)
+
+    def test_cohort_pick_adds_its_own_rates(self):
+        out = self._run("2025-07")
+        # 2025-08 has 2026-08 and 2026-09: 2,300 -> 2,200 of 2025-07 waiting.
+        self.assertIn("2,300 in 2026-08 -> 2,200 in 2026-09", out)
+        row = [ln.split() for ln in out.splitlines()
+               if ln.strip().startswith("last month")]
+        self.assertEqual(row, [["last", "month", "4.3%", "4.9%"]])
+
+    def test_cohort_without_a_later_one_falls_back(self):
+        out = self._run("2")   # 2025-08; 2025-09 has a single month
+        self.assertIn("No 2025-09 figures for the same months", out)
 
     def test_gap_is_flagged(self):
         out = self._run("2025-07", "2026-09,2025-07,9700\n2026-07,2025-07,10500\n")
@@ -714,6 +832,45 @@ class FuzzPipeline(unittest.TestCase):
                 # And colour is only ever paint on that same text.
                 colored = run_analyze_colored(entered, width)
                 self.assertEqual(ANSI.sub("", colored), out)
+
+    def test_own_cohort_never_breaks_the_report(self):
+        # Own-cohort counts are differences of two rounded public figures, so
+        # they can be zero, flat, growing or even negative; none of that may
+        # crash, overflow or leak a NaN.
+        rng = random.Random(20261015)
+        for i in range(self.CASES):
+            entered = self._random_backlog(rng)
+            start = rng.randint(2020 * 12, 2027 * 12)
+            periods = [b.month_label(start + k) for k in range(len(entered))]
+            periods = [p for p in periods if rng.random() < 0.85] or periods[:1]
+            waiting = {p: float(rng.randint(-200, 5000)) for p in periods}
+            ahead = {p: float(rng.randint(0, 60000)) for p in periods}
+            own = b.OwnCohort(b.month_label(start - 12), waiting, ahead)
+            width = rng.randint(b.MIN_WIDTH, b.MAX_WIDTH)
+            with self.subTest(case=i, own=own, width=width):
+                out = run_analyze(entered, width, own)
+                self.assertIn("Your own cohort", out)
+                self.assertNotIn("nan", out.lower())
+                self.assertNotIn("inf", out.lower())
+                self.assertLessEqual(max(map(len, out.splitlines())), width)
+                for n, mine, theirs in b.own_windows(own):
+                    self.assertGreaterEqual(n, 1)
+                    for rate in (mine, theirs):
+                        self.assertTrue(rate is None or rate <= 1.0)
+
+    def test_shrink_rate_compounds_back_to_the_end_count(self):
+        # Applying the rate for `months` months has to land on `end` again.
+        rng = random.Random(20261016)
+        for i in range(self.CASES):
+            start = float(rng.randint(1, 60000))
+            end = float(rng.randint(0, 60000))
+            months = rng.randint(1, 60)
+            with self.subTest(case=i, start=start, end=end, months=months):
+                rate = b.shrink_rate(start, end, months)
+                self.assertLessEqual(rate, 1.0)
+                self.assertEqual(rate > 0, end < start)
+                self.assertAlmostEqual(start * (1 - rate) ** months, end,
+                                       delta=1e-6 * max(start, end, 1))
 
     def test_odds_invariants(self):
         rng = random.Random(20260830)
