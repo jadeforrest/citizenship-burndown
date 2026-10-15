@@ -715,35 +715,56 @@ class Summary(unittest.TestCase):
     def test_rows_from_2025_01_with_two_months(self):
         rows = b.summary_rows(self.COHORTS)
         self.assertEqual([r[0] for r in rows], ["2025-07", "2025-08", "2026-01"])
-        cohort, current, mean, median = rows[0]
-        self.assertEqual((current, round(mean), median), (9300, 722, 400))
+        cohort, current, cleared, recent, median = rows[0]
+        self.assertEqual((current, cleared, recent, median), (9300, 0, 300, 400))
+        self.assertEqual([r[2] for r in rows], [0, None, None])
         self.assertEqual([r[0] for r in b.summary_rows(self.COHORTS, "2025-08")],
                          ["2025-08", "2026-01"])
 
     def test_matches_the_full_analysis(self):
-        # Same Likely/Median rows analyze() prints for 2025-07: 6.4 / 12.9
-        # months at the average, 11.6 / 23.2 at the median.
+        # Same Recent/Median rows analyze() prints for 2025-07: 15.5 / 31.0
+        # months at the 3-month pace, 11.6 / 23.2 at the median.
         out = run_summary(self.COHORTS)
         row = [ln.split() for ln in out.splitlines() if ln.startswith("  2025-07")]
-        self.assertEqual(row, [["2025-07", "9,300", "722/mo", "6.4mo", "12.9mo",
-                                "400/mo", "11.6mo", "23.2mo"]])
+        self.assertEqual(row, [["2025-07", "9,300", "0", "300", "15.5", "31.0",
+                                "400", "11.6", "23.2"]])
         full = run_analyze(JULY_ENTERED)
-        for months in ("6.4 mo", "12.9 mo", "11.6 mo", "23.2 mo"):
-            self.assertIn(months, full)
+        recent_row = next(ln for ln in full.splitlines() if "Recent (3 mo pace)" in ln)
+        median_row = next(ln for ln in full.splitlines() if ln.strip().startswith("Median "))
+        for months in ("15.5 mo", "31.0 mo"):
+            self.assertIn(months, recent_row)
+        for months in ("11.6 mo", "23.2 mo"):
+            self.assertIn(months, median_row)
+
+    def test_recent_pace(self):
+        self.assertEqual(b.recent_pace([100.0, 500, 100, 400, 400]), (300, 3))
+        # Fewer months than RECENT_MONTHS: average what there is.
+        self.assertEqual(b.recent_pace([100.0, 500]), (300, 2))
+        self.assertEqual(b.recent_pace([-200.0]), (-200, 1))
+
+    def test_pace_labels_sit_over_their_columns(self):
+        lines = run_summary(self.COHORTS).splitlines()
+        at = next(i for i, ln in enumerate(lines) if ln.startswith("  cohort"))
+        labels, heads = lines[at - 1], lines[at]
+        groups = [m.start() for m in re.finditer("pace/mo", heads)]
+        spans = [(groups[0], groups[1] - 3), (groups[1], len(heads))]
+        for name, (start, end) in zip(b.SUMMARY_PACES, spans):
+            middle = labels.index(name) + len(name) / 2
+            self.assertLessEqual(abs(middle - (start + end) / 2), 1, name)
 
     def test_stalled_cohort_never_clears(self):
         out = run_summary(self.COHORTS)
         row = [ln.split() for ln in out.splitlines() if ln.startswith("  2026-01")]
-        self.assertEqual(row[0][1:], ["500", "0/mo", "never", "never",
-                                      "0/mo", "never", "never"])
+        self.assertEqual(row[0][1:], ["500", "n/a", "0", "never", "never",
+                                      "0", "never", "never"])
 
     def test_stacked_when_the_table_wont_fit(self):
         out = run_summary(self.COHORTS, STACKED)
-        self.assertIn("2025-07  9,300 ahead", out)
         lines = out.splitlines()
-        at = lines.index("  2025-07  9,300 ahead")
-        self.assertEqual(lines[at + 1].split(), ["likely", "722/mo", "6.4mo", "12.9mo"])
-        self.assertEqual(lines[at + 2].split(), ["median", "400/mo", "11.6mo", "23.2mo"])
+        at = lines.index("  2025-07  9,300 ahead, 0 cleared")
+        self.assertEqual(lines[at + 1].split(), ["recent", "300", "15.5", "31.0"])
+        self.assertEqual(lines[at + 2].split(), ["median", "400", "11.6", "23.2"])
+        self.assertIn("  2025-08  11,500 ahead, n/a cleared", lines)
 
     def test_fits_and_strips_cleanly_at_every_width(self):
         for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
@@ -754,7 +775,8 @@ class Summary(unittest.TestCase):
                 with unittest.mock.patch.object(b, "COLOR", True):
                     colored = run_summary(self.COHORTS, width)
                 self.assertEqual(ANSI.sub("", colored), out)
-                for figure in ("722/mo", "12.9mo", "400/mo", "23.2mo", "never"):
+                for figure in ("300", "31.0", "400", "23.2", "never", "n/a",
+                               "pace/mo"):
                     self.assertIn(figure, out)
 
     def test_default_cohort_and_never_are_painted(self):
@@ -762,7 +784,37 @@ class Summary(unittest.TestCase):
             out = run_summary(self.COHORTS)
         july = next(ln for ln in out.splitlines() if "2025-07" in ln)
         self.assertTrue(july.startswith("\033[1m"))
-        self.assertIn("\033[31m  never", out)
+        self.assertRegex(out, "\033\\[31m *never")
+
+    def test_own_last_month(self):
+        self.assertEqual(b.own_last_month(JULY_COHORTS, "2025-07"), 0)
+        # Give 2025-08 a 2025-09 behind it: 2025-08's own still-waiting count
+        # goes 14,400-11,900 = 2,500 in September to 13,900-11,500 = 2,400.
+        cohorts = {**JULY_COHORTS, "2025-09": [("2026-10", 13900.0),
+                                               ("2026-09", 14400.0),
+                                               ("2026-08", 14200.0)]}
+        self.assertEqual(b.own_last_month(cohorts, "2025-08"),
+                         (14400 - 11900) - (13900 - 11500))
+
+    def test_own_last_month_needs_the_latest_two_months(self):
+        july = JULY_COHORTS["2025-07"]
+        cases = {
+            "no next cohort": {"2025-07": july},
+            "next lacks the latest month": {"2025-07": july, "2025-08": [
+                (p, n) for p, n in JULY_COHORTS["2025-08"] if p != "2026-10"]},
+            "next lacks the month before": {"2025-07": july, "2025-08": [
+                (p, n) for p, n in JULY_COHORTS["2025-08"] if p != "2026-09"]},
+        }
+        for name, cohorts in cases.items():
+            self.assertIsNone(b.own_last_month(cohorts, "2025-07"), name)
+
+    def test_negative_cleared_is_shown(self):
+        # The count grew (rounding, or IRCC revising): show it, don't hide it.
+        cohorts = {"2025-07": JULY_COHORTS["2025-07"],
+                   "2025-08": [("2026-10", 11600.0), ("2026-09", 11900.0)]}
+        row = b.summary_rows(cohorts)[0]
+        self.assertEqual(row[2], (11900 - 9700) - (11600 - 9300))
+        self.assertIn(" -100 ", run_summary(cohorts))
 
     def test_nothing_to_summarize(self):
         out = run_summary({"2024-06": JULY_COHORTS["2025-07"]})
@@ -787,11 +839,11 @@ class Summary(unittest.TestCase):
             self.assertLessEqual(len(b.fmt_months_short(months)), b.SUMMARY_CELL,
                                  months)
         self.assertEqual(b.fmt_count(9300), "9,300")
-        self.assertEqual(b.fmt_months_short(12.94), "12.9mo")
+        self.assertEqual(b.fmt_months_short(12.94), "12.9")
         # Each fallback kicks in only once the roomier form overflows.
-        self.assertEqual(b.fmt_months_short(999.94), "999.9mo")
-        self.assertEqual(b.fmt_months_short(1234.6), "1,235mo")
-        self.assertEqual(b.fmt_months_short(12345), "1e+04")
+        self.assertEqual(b.fmt_months_short(99999.94), "99999.9")
+        self.assertEqual(b.fmt_months_short(99999.96), "100,000")
+        self.assertEqual(b.fmt_months_short(1234567), "1e+06")
         self.assertEqual(b.fmt_months_short(float("inf")), "never")
 
 

@@ -35,7 +35,8 @@ monthly people-ahead counts are read out newest first, as if you'd pasted them.
     python3 burndown2.py --summarize
 
 skips the prompt and prints a one-line summary for every cohort from 2025-01:
-the likely (average) and median paces and the months to 50% and 100% cleared.
+its own applicants cleared last month, and the recent and median paces with
+the months to 50% and 100% cleared.
 """
 
 import argparse
@@ -696,6 +697,17 @@ def processed_per_month(entered: list[float]) -> list[float]:
     return [chrono[i] - chrono[i + 1] for i in range(len(chrono) - 1)]
 
 
+# The "recent" pace averages this many of the latest months (fewer if that's
+# all the data there is).
+RECENT_MONTHS = 3
+
+
+def recent_pace(processed: list[float]) -> tuple[float, int]:
+    """Average throughput over the latest RECENT_MONTHS months, and how many."""
+    n = min(RECENT_MONTHS, len(processed))
+    return statistics.mean(processed[-n:]), n
+
+
 def time_to_clear(current: float, rate: float, fraction: float = 1.0) -> float:
     """Months until `fraction` of `current` has cleared at `rate` a month."""
     return current * fraction / rate if rate > 0 else float("inf")
@@ -736,8 +748,7 @@ def analyze(entered: list[float], width: int | None = None,
     median = statistics.median(processed)
     stdev = statistics.stdev(processed) if len(processed) >= 2 else 0.0
 
-    recent_n = min(3, len(processed))
-    recent = statistics.mean(processed[-recent_n:])
+    recent, recent_n = recent_pace(processed)
 
     fast = mean + stdev   # +1 sigma
     slow = mean - stdev   # -1 sigma
@@ -840,76 +851,121 @@ def fmt_count(value: float) -> str:
 
 
 def fmt_months_short(months: float) -> str:
-    """Months to clear, in at most SUMMARY_CELL characters."""
+    """Months to clear (the unit is in the heading), in at most SUMMARY_CELL characters."""
     if months == float("inf"):
         return "never"
-    for text in (f"{months:.1f}mo", f"{months:,.0f}mo"):
+    for text in (f"{months:.1f}", f"{months:,.0f}"):
         if len(text) <= SUMMARY_CELL:
             return text
     return f"{months:.0e}"
 
 
-def summary_rows(cohorts: dict[str, list[tuple[str, float]]],
-                 start: str = SUMMARY_FROM) -> list[tuple[str, float, float, float]]:
+def own_last_month(cohorts: dict[str, list[tuple[str, float]]],
+                   cohort: str) -> float | None:
     """
-    (cohort, people ahead now, likely rate, median rate) for each cohort from
-    `start` on with two or more months of data — the same average and median
-    of monthly throughput analyze() calls Likely and Median.
+    How many of `cohort`'s own applicants cleared in its latest month: the
+    drop in own_cohort()'s still-waiting count. None unless the next cohort
+    has figures for both that month and the one before it.
+    """
+    waiting = own_cohort(cohorts, cohort).waiting
+    last = cohorts[cohort][0][0]
+    before = month_label(month_index(last) - 1)
+    if last in waiting and before in waiting:
+        return waiting[before] - waiting[last]
+    return None
+
+
+def summary_rows(cohorts: dict[str, list[tuple[str, float]]],
+                 start: str = SUMMARY_FROM
+                 ) -> list[tuple[str, float, float | None, float, float]]:
+    """
+    (cohort, people ahead now, own applicants cleared last month, recent
+    rate, median rate) for each cohort from `start` on with two or more
+    months of data — the same paces analyze() calls Recent and Median.
     """
     rows = []
     for cohort in cohort_menu(cohorts):
         if cohort >= start:
             entered = [count for _, count in cohorts[cohort]]
             processed = processed_per_month(entered)
-            rows.append((cohort, entered[0], statistics.mean(processed),
-                         statistics.median(processed)))
+            rows.append((cohort, entered[0], own_last_month(cohorts, cohort),
+                         recent_pace(processed)[0], statistics.median(processed)))
     return rows
 
 
 def summary_cells(current: float, rate: float) -> tuple[str, str, str]:
     """Pace, time to 50% and time to 100% for one summary row."""
-    return (f"{fmt_count(rate)}/mo",
+    return (fmt_count(rate),
             fmt_months_short(time_to_clear(current, rate, 0.5)),
             fmt_months_short(time_to_clear(current, rate, 1.0)))
 
 
-def summary_group(values: tuple[str, str, str], pace_w: int) -> str:
+class SummaryWidths(NamedTuple):
+    """
+    Column widths that vary with the data. The cleared and pace columns don't:
+    fmt_count never exceeds SUMMARY_CELL, the width of their headings.
+    """
+    ahead: int
+    cell: int
+
+    def table(self) -> int:
+        """Width of the side-by-side summary table."""
+        return (2 + 7 + 2 + self.ahead + 2 + SUMMARY_CELL
+                + 2 * (3 + SUMMARY_CELL + 2 * (2 + self.cell)))
+
+
+def summary_layout(rows: list) -> tuple[list, SummaryWidths]:
+    """summary_rows() rendered to text cells, and the column widths they need."""
+    cells = [(cohort, fmt_count(current),
+              "n/a" if cleared is None else fmt_count(cleared),
+              summary_cells(current, recent), summary_cells(current, median))
+             for cohort, current, cleared, recent, median in rows]
+    groups = [g for c in cells for g in c[3:]]
+    return cells, SummaryWidths(
+        ahead=max(len("ahead"), *(len(c[1]) for c in cells)),
+        cell=max(len("never"), *(len(t) for g in groups for t in g[1:])))
+
+
+def summary_group(values: tuple[str, str, str], w: SummaryWidths) -> str:
     """One pace's pace / 50% / 100% cells, with never-clearing times in red."""
     pace, half, full = values
-    cells = [paint(f"{t:>{SUMMARY_CELL}}", *(("red",) if t == "never" else ()))
+    cells = [paint(f"{t:>{w.cell}}", *(("red",) if t == "never" else ()))
              for t in (half, full)]
-    return f"{pace:>{pace_w}}  " + "  ".join(cells)
+    return f"{pace:>{SUMMARY_CELL}}  " + "  ".join(cells)
 
 
-SUMMARY_PACES = ("likely (avg)", "median")
+SUMMARY_PACES = (f"recent ({RECENT_MONTHS} mo)", "median")
 
 
-def print_summary_table(cells: list, ahead_w: int, pace_w: int) -> None:
+def print_summary_table(cells: list, w: SummaryWidths) -> None:
     """The summary as one row per cohort, both paces side by side."""
-    group_w = pace_w + 2 * (2 + SUMMARY_CELL)
-    lead = " " * (2 + 7 + 2 + ahead_w)
+    group_w = SUMMARY_CELL + 2 * (2 + w.cell)
+    lead = " " * (2 + 7 + 2 + w.ahead + 2 + SUMMARY_CELL)
     print(paint((lead + "".join(f"   {name:^{group_w}}"
                                 for name in SUMMARY_PACES)).rstrip(), "dim"))
-    heads = f"{'pace':>{pace_w}}  {'50%':>{SUMMARY_CELL}}  {'100%':>{SUMMARY_CELL}}"
-    print(paint(f"  {'cohort':<7}  {'ahead':>{ahead_w}}" + f"   {heads}" * 2, "dim"))
-    for cohort, ahead, likely, median in cells:
+    heads = f"{'pace/mo':>{SUMMARY_CELL}}  {'50%':>{w.cell}}  {'100%':>{w.cell}}"
+    print(paint(f"  {'cohort':<7}  {'ahead':>{w.ahead}}  "
+                f"{'cleared':>{SUMMARY_CELL}}" + f"   {heads}" * 2, "dim"))
+    for cohort, ahead, cleared, recent, median in cells:
         emph = ("bold",) if cohort == DEFAULT_COHORT else ()
-        print(paint(f"  {cohort:<7}  {ahead:>{ahead_w}}", *emph)
-              + f"   {summary_group(likely, pace_w)}   {summary_group(median, pace_w)}")
+        print(paint(f"  {cohort:<7}  {ahead:>{w.ahead}}  {cleared:>{SUMMARY_CELL}}",
+                    *emph)
+              + f"   {summary_group(recent, w)}   {summary_group(median, w)}")
 
 
-def print_summary_stacked(cells: list, pace_w: int) -> None:
+def print_summary_stacked(cells: list, w: SummaryWidths, width: int) -> None:
     """The summary as a small block per cohort, one line per pace."""
-    print(paint(f"    {'':6}  {'pace':>{pace_w}}  {'50%':>{SUMMARY_CELL}}  "
-                f"{'100%':>{SUMMARY_CELL}}", "dim"))
-    for cohort, ahead, likely, median in cells:
-        print(paint(f"  {cohort}  {ahead} ahead", "bold"))
-        for name, values in zip(SUMMARY_PACES, (likely, median)):
-            print(f"    {name.split()[0]:<6}  {summary_group(values, pace_w)}")
+    print(paint(f"    {'':6}  {'pace/mo':>{SUMMARY_CELL}}  {'50%':>{w.cell}}  "
+                f"{'100%':>{w.cell}}", "dim"))
+    for cohort, ahead, cleared, recent, median in cells:
+        print(paint(wrap(f"{cohort}  {ahead} ahead, {cleared} cleared", width,
+                         indent="  ", hanging="    "), "bold"))
+        for name, values in zip(SUMMARY_PACES, (recent, median)):
+            print(f"    {name.split()[0]:<6}  {summary_group(values, w)}")
 
 
 def print_summary(cohorts: dict[str, list[tuple[str, float]]], width: int) -> None:
-    """Likely and median times to 50% / 100% for every cohort from SUMMARY_FROM."""
+    """Recent and median times to 50% / 100% for every cohort from SUMMARY_FROM."""
     banner = paint("=" * min(width, 60), "cyan")
     print("\n" + banner)
     print(paint("COHORT SUMMARY", "bold", "cyan"))
@@ -920,20 +976,18 @@ def print_summary(cohorts: dict[str, list[tuple[str, float]]], width: int) -> No
                    f"in {HISTORY_PATH.name} yet.", width))
         return
     print(wrap(f"Months until 50% and 100% of the people ahead of each cohort "
-               f"from {SUMMARY_FROM} have cleared, at its average (likely) and "
-               "median monthly pace.", width))
+               f"from {SUMMARY_FROM} have cleared, at its recent pace (the "
+               f"average of its last {RECENT_MONTHS} months) and its median "
+               "monthly pace. Cleared is how many of the cohort's own "
+               "applicants were processed last month (the gap to the next "
+               "cohort, so rounded to the nearest 100; n/a without it).", width))
     print()
 
-    cells = [(cohort, fmt_count(current), summary_cells(current, mean),
-              summary_cells(current, median))
-             for cohort, current, mean, median in rows]
-    ahead_w = max(len("ahead"), *(len(c[1]) for c in cells))
-    pace_w = max(len("pace"), *(len(p[0]) for c in cells for p in c[2:]))
-    group_w = pace_w + 2 * (2 + SUMMARY_CELL)
-    if 2 + 7 + 2 + ahead_w + 2 * (3 + group_w) <= width:
-        print_summary_table(cells, ahead_w, pace_w)
+    cells, w = summary_layout(rows)
+    if w.table() <= width:
+        print_summary_table(cells, w)
     else:
-        print_summary_stacked(cells, pace_w)
+        print_summary_stacked(cells, w, width)
 
     gaps = [c for c, *_ in rows if missing_months([p for p, _ in cohorts[c]])]
     if gaps:
@@ -1016,7 +1070,7 @@ def parse_args(argv) -> argparse.Namespace:
         description="Estimate how long the queue ahead of you will take to clear.")
     parser.add_argument(
         "--summarize", action="store_true",
-        help=f"no prompt: likely and median times to 50%% and 100%% for every "
+        help=f"no prompt: recent and median times to 50%% and 100%% for every "
              f"cohort from {SUMMARY_FROM} in {HISTORY_PATH.name}")
     return parser.parse_args(list(argv))
 
