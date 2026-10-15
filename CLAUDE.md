@@ -98,6 +98,10 @@ bytecode caching (`python3 -B`, `PYTHONDONTWRITEBYTECODE=1`) and clear
 size and mtime-second unchanged, so Python silently reuses the stale `.pyc` and
 every such mutant appears to survive.
 
+The own-cohort block and the `--summarize` output are pinned by exact-text
+tests (added to kill text, padding and alignment mutants), so a wording or
+layout change there means updating those expected strings too.
+
 ```bash
 python3 flpt_watch.py          # run forever, checking hourly
 python3 flpt_watch.py --once   # check once and exit (cron/testing)

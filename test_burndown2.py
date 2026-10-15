@@ -560,6 +560,7 @@ class OwnCohortRates(unittest.TestCase):
         self.assertAlmostEqual(b.shrink_rate(100, 50, 1), 0.5)
         self.assertEqual(b.shrink_rate(100, 0, 3), 1.0)
         self.assertEqual(b.shrink_rate(100, 100, 3), 0.0)
+        self.assertEqual(b.shrink_rate(1, 0, 2), 1.0)   # a start of 1 is measurable
         self.assertLess(b.shrink_rate(100, 200, 1), 0)
         for args in ((0, 10, 1), (-5, 10, 1), (10, -1, 1), (10, 5, 0)):
             self.assertIsNone(b.shrink_rate(*args), args)
@@ -626,6 +627,78 @@ class OwnCohortRates(unittest.TestCase):
                 for rate in rates:
                     self.assertIn(rate, section)
 
+    # The tests below pin the block's exact text; they were added to kill the
+    # mutants (text, alignment, padding) the looser assertions above let by.
+    # 13 months, so the windows are 3, 6 and 12: labels of different lengths.
+    PERIODS13 = [b.month_label(b.month_index("2025-10") + k) for k in range(13)]
+    OWN13 = b.OwnCohort("2025-07", dict(zip(PERIODS13, [
+        2600.0, 2550, 2500, 2500, 2450, 2400, 2400, 2350, 2300, 2200, 2250, 2250,
+        2300])), dict(zip(PERIODS13, [
+            20000.0, 19000, 18000, 17000, 16000, 15000, 14000, 13000, 12000, 11000,
+            10000, 9500, 9000])))
+
+    def own_block(self, own: "b.OwnCohort", width: int) -> str:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            b.print_own_cohort(own, width)
+        return buf.getvalue()
+
+    def test_block_text_wide(self):
+        self.assertEqual(self.own_block(self.OWN13, WIDE), """\
+  Your own cohort (2025-07)
+    Everyone from 2025-07 still waiting is 2025-08's people ahead minus yours.
+    If files within a month are pulled in random order, the share of them
+    cleared each month is your chance, however much older files are put first.
+    Still waiting:  2,600 in 2025-10 -> 2,300 in 2026-10
+    per month       your cohort  people ahead
+    last 3 months          grew          6.5%
+    last 6 months          0.7%          7.1%
+    last 12 months         1.0%          6.4%
+    IRCC rounds these counts to the nearest 100, so a single month of one
+    cohort is mostly noise; the longer windows are steadier.
+""")
+
+    def test_block_text_narrow(self):
+        self.assertEqual(self.own_block(self.OWN13, STACKED), """\
+  Your own cohort (2025-07)
+    Everyone from 2025-07 still waiting
+    is 2025-08's people ahead minus
+    yours. If files within a month are
+    pulled in random order, the share of
+    them cleared each month is your
+    chance, however much older files are
+    put first.
+    Still waiting: 2,600 in 2025-10 ->
+      2,300 in 2026-10
+    /mo    cohort   ahead
+    3 mo     grew    6.5%
+    6 mo     0.7%    7.1%
+    12 mo    1.0%    6.4%
+    IRCC rounds these counts to the
+    nearest 100, so a single month of
+    one cohort is mostly noise; the
+    longer windows are steadier.
+""")
+
+    def test_fallback_note_text(self):
+        self.assertEqual(self.own_block(b.OwnCohort("2025-07", {}, {}), WIDE), """\
+  Your own cohort (2025-07)
+    No 2025-08 figures for the same months, so there's no own-cohort rate; the
+    chances above count everyone ahead of you.
+""")
+
+    def test_spelled_out_headings_exactly_when_they_fit(self):
+        # "    last 12 months  your cohort  people ahead" is 45 wide.
+        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
+            with self.subTest(width=width):
+                out = self.own_block(self.OWN13, width)
+                self.assertEqual("your cohort" in out, width >= 45)
+
+    def test_two_month_window_is_plural(self):
+        own = b.OwnCohort("2025-12", {"2026-01": 100.0, "2026-03": 90.0},
+                          {"2026-01": 1000.0, "2026-03": 900.0})
+        self.assertIn("    last 2 months  ", self.own_block(own, WIDE))
+
 
 SAMPLE = ("2026-07,2025-07,10500\n2026-08,2025-07,10200\n2026-09,2025-07,9700\n"
           "2026-09,2025-08,11900\n2026-08,2025-08,12500\n"
@@ -687,6 +760,30 @@ class MainWithHistory(unittest.TestCase):
         self.assertIn("Using cohort 2025-07", out)
         self.assertNotIn("Skipped", self._run(""))
         self.assertIn("(line 8).", self._run("", SAMPLE + "Sept,2025-07,9000\n"))
+
+    def test_paired_looking_cohort_drops_its_own_rates(self):
+        # Newest first that's 10, 5000, 20, 6000: a two-column paste to
+        # extract_backlog, so what's analyzed is no longer the cohort's series.
+        body = "".join(f"{p},{c},{n}\n" for c, counts in
+                       (("2025-07", (6000, 20, 5000, 10)),
+                        ("2025-08", (9000, 8000, 7000, 6000)))
+                       for p, n in zip(("2026-06", "2026-07", "2026-08", "2026-09"),
+                                       counts))
+        out = self._run("2025-07", body)
+        self.assertIn("Input mode: two-column", out)
+        self.assertNotIn("Your own cohort", out)
+
+    def test_rejected_rows_warning_wraps_and_is_yellow(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            b.warn_rejected([3, 14, 15, 92, 65, 358, 979], STACKED)
+        self.assertEqual(buf.getvalue(), "⚠  Skipped unreadable rows in\n"
+                                         "    flpt_history.csv (lines 3, 14, 15,\n"
+                                         "    92, 65, 358, 979).\n")
+        with unittest.mock.patch.object(b, "COLOR", True), \
+                contextlib.redirect_stdout(io.StringIO()) as buf:
+            b.warn_rejected([3], WIDE)
+        self.assertTrue(buf.getvalue().startswith("\033[33m⚠  Skipped"))
 
     def test_no_analyzable_cohort_keeps_the_plain_prompt(self):
         out = self._run("", "2026-09,2025-08,11900\n")
@@ -839,12 +936,95 @@ class Summary(unittest.TestCase):
             self.assertLessEqual(len(b.fmt_months_short(months)), b.SUMMARY_CELL,
                                  months)
         self.assertEqual(b.fmt_count(9300), "9,300")
+        self.assertEqual(b.fmt_count(999999), "999,999")   # exactly SUMMARY_CELL
         self.assertEqual(b.fmt_months_short(12.94), "12.9")
         # Each fallback kicks in only once the roomier form overflows.
         self.assertEqual(b.fmt_months_short(99999.94), "99999.9")
         self.assertEqual(b.fmt_months_short(99999.96), "100,000")
         self.assertEqual(b.fmt_months_short(1234567), "1e+06")
         self.assertEqual(b.fmt_months_short(float("inf")), "never")
+
+    # The tests below pin the summary's exact text and widths; they were added
+    # to kill the mutants (text, alignment, padding) the looser ones let by.
+    def test_table_text(self):
+        self.assertEqual(run_summary(self.COHORTS), """
+============================================================
+COHORT SUMMARY
+============================================================
+Months until 50% and 100% of the people ahead of each cohort from 2025-01 have
+cleared, at its recent pace (the average of its last 3 months) and its median
+monthly pace. Cleared is how many of the cohort's own applicants were
+processed last month (the gap to the next cohort, so rounded to the nearest
+100; n/a without it).
+
+                                 recent (3 mo)              median
+  cohort    ahead  cleared   pace/mo    50%   100%   pace/mo    50%   100%
+  2025-07   9,300        0       300   15.5   31.0       400   11.6   23.2
+  2025-08  11,500      n/a       300   19.2   38.3       500   11.5   23.0
+  2026-01     500      n/a         0  never  never         0  never  never
+""" + "=" * WIDE + "\n\n")
+
+    def test_stacked_text(self):
+        out = run_summary(self.COHORTS, STACKED)
+        self.assertEqual(out[out.index("\n\n") + 2:], """\
+            pace/mo    50%   100%
+  2025-07  9,300 ahead, 0 cleared
+    recent      300   15.5   31.0
+    median      400   11.6   23.2
+  2025-08  11,500 ahead, n/a cleared
+    recent      300   19.2   38.3
+    median      500   11.5   23.0
+  2026-01  500 ahead, n/a cleared
+    recent        0  never  never
+    median        0  never  never
+""" + "=" * STACKED + "\n\n")
+
+    def test_stacked_cohort_line_wraps_under_itself(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            b.print_summary_stacked(
+                [("2025-07", "999,999", "999,999", ("1", "2", "3"), ("4", "5", "6"))],
+                b.SummaryWidths(7, 5), STACKED)
+        self.assertEqual(buf.getvalue().splitlines()[1:3],
+                         ["  2025-07  999,999 ahead, 999,999", "    cleared"])
+
+    def test_gaps_and_nothing_to_summarize_text(self):
+        gappy = {"2025-03": [("2026-09", 900.0), ("2026-07", 1000.0)],
+                 "2025-04": [("2026-09", 800.0), ("2026-06", 900.0)]}
+        out = run_summary(gappy, 60)
+        self.assertEqual(out[out.index("\n\n⚠"):], """
+
+⚠  Months missing for 2025-03, 2025-04: their rates treat
+    the recorded months as consecutive.
+""" + "=" * 60 + "\n\n")
+        self.assertEqual(run_summary({}, 60), """
+============================================================
+COHORT SUMMARY
+============================================================
+No cohort from 2025-01 on has two months of data in
+flpt_history.csv yet.
+""")
+        with unittest.mock.patch.object(b, "COLOR", True):
+            self.assertIn("\033[33m⚠  Months missing", run_summary(gappy, 60))
+
+    def test_table_width_is_what_it_renders(self):
+        cells, w = b.summary_layout(b.summary_rows(self.COHORTS))
+        lines = run_summary(self.COHORTS).splitlines()
+        table = lines[lines.index(next(ln for ln in lines if ln.startswith("  cohort"))):-2]
+        self.assertEqual({len(ln) for ln in table}, {w.table()})
+        # ...and the table is used down to exactly that width.
+        self.assertIn("  cohort", run_summary(self.COHORTS, w.table()))
+        self.assertNotIn("  cohort", run_summary(self.COHORTS, w.table() - 1))
+
+    def test_layout_widths(self):
+        def widths(current, recent, median):
+            return b.summary_layout([("2025-07", current, None, recent, median)])[1]
+        # Floors: the "ahead" heading and "never" (wider than "100%").
+        self.assertEqual(widths(500.0, 500.0, 250.0), b.SummaryWidths(5, 5))
+        # The pace cell has its own column; it doesn't widen the time cells.
+        self.assertEqual(widths(1000.0, 999999.0, 999999.0), b.SummaryWidths(5, 5))
+        # The 50% time can be the wider one: "617,284" beside "1e+06".
+        self.assertEqual(widths(1234567.0, 1.0, 1.0), b.SummaryWidths(5, 7))
 
 
 class MainSummarize(unittest.TestCase):
@@ -860,6 +1040,17 @@ class MainSummarize(unittest.TestCase):
         self.assertIn("Skipped unreadable rows", out)
         self.assertNotIn("BURN-DOWN ANALYSIS", out)
         self.assertNotIn("Pick a cohort", out)
+
+    def test_help_describes_the_flag(self):
+        with contextlib.redirect_stdout(io.StringIO()) as buf, \
+                self.assertRaises(SystemExit):
+            b.parse_args(["--help"])
+        text = " ".join(buf.getvalue().split())
+        self.assertRegex(text, r"(^| )Estimate how long the queue ahead of you "
+                               r"will take to clear\.( |$)")
+        self.assertIn("--summarize no prompt: recent and median times to 50% and "
+                      "100% for every cohort from 2025-01 in flpt_history.csv",
+                      text)
 
     def test_unknown_flag_is_rejected(self):
         with tempfile.TemporaryDirectory() as d, \

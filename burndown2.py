@@ -604,8 +604,7 @@ def rate_cell(rate: float | None) -> tuple[str, tuple[str, ...]]:
 def print_own_cohort(own: OwnCohort, width: int) -> None:
     """Your cohort's own monthly clearance, beside the people-ahead rate."""
     later = month_label(month_index(own.cohort) + 1)
-    print(paint(wrap(f"Your own cohort ({own.cohort})", width, indent="  ",
-                     hanging="  "), "bold"))
+    print(paint(f"  Your own cohort ({own.cohort})", "bold"))   # never wraps
     rows = own_windows(own)
     if not rows:
         print(wrap(f"No {later} figures for the same months, so there's no "
@@ -630,7 +629,8 @@ def print_own_cohort(own: OwnCohort, width: int) -> None:
         labels = [(f"last {n} months" if n > 1 else "last month") if long
                   else f"{n} mo" for n, _, _ in rows]
         label_w = max(len(s) for s in labels)   # each outruns its corner
-        own_w, ahead_w = max(len(own_h), 6), max(len(ahead_h), 6)
+        # A rate cell is at most 6 wide (100.0%); both own headings already are.
+        own_w, ahead_w = len(own_h), max(len(ahead_h), 6)
         if 4 + label_w + 2 + own_w + 2 + ahead_w <= width:
             break
     print(paint(f"    {corner:<{label_w}}  {own_h:>{own_w}}  "
@@ -920,10 +920,11 @@ def summary_layout(rows: list) -> tuple[list, SummaryWidths]:
               "n/a" if cleared is None else fmt_count(cleared),
               summary_cells(current, recent), summary_cells(current, median))
              for cohort, current, cleared, recent, median in rows]
-    groups = [g for c in cells for g in c[3:]]
+    times = [t for *_, recent, median in cells for g in (recent, median)
+             for t in g[1:]]
     return cells, SummaryWidths(
         ahead=max(len("ahead"), *(len(c[1]) for c in cells)),
-        cell=max(len("never"), *(len(t) for g in groups for t in g[1:])))
+        cell=max(len("never"), *map(len, times)))
 
 
 def summary_group(values: tuple[str, str, str], w: SummaryWidths) -> str:
