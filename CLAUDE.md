@@ -50,6 +50,13 @@ changes. Prose wraps at `PROSE_WIDTH` (78) even on wider terminals.
 BURNDOWN_WIDTH=50 python3 burndown2.py   # check the narrow layouts
 ```
 
+`python3 burndown2.py --summarize` skips the prompt and prints one row per
+cohort from `SUMMARY_FROM` (2025-01) with two or more months of history: people
+ahead now, then the Likely (average) and Median paces with the months to 50% and
+100% cleared — the same figures as those rows of the full report. Below the
+table width it stacks into a block per cohort. Cells go through `fmt_count` /
+`fmt_months_short`, which never exceed `SUMMARY_CELL` characters.
+
 Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
 stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
 `FORCE_COLOR=1` forces it on through a pipe. `main()` sets the module-level
@@ -158,6 +165,10 @@ History and prompt handling, ahead of the analysis pipeline:
   have. `main()` passes it to `analyze(..., own=)` only when a cohort was
   picked (not for pasted counts).
 - `color_enabled` / `paint` — see the colour notes above.
+- `main(argv=())` takes its arguments explicitly (`__main__` passes
+  `sys.argv[1:]`) so the tests, which run under unittest's own argv, can call
+  it bare. `--summarize` goes to `summary_rows` → `print_summary` (which picks
+  `print_summary_table` or `print_summary_stacked`).
 
 The analysis itself is a small pipeline of pure functions, which `main()`
 wires to stdin/stdout:

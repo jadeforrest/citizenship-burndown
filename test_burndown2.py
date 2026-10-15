@@ -365,7 +365,8 @@ class AnalyzeOutput(unittest.TestCase):
         self.assertIn("BURN-DOWN ANALYSIS", run_analyze(numbers))
 
 
-def run_main(typed: str, history: Path, **env: str) -> str:
+def run_main(typed: str, history: Path, argv: tuple[str, ...] = (),
+             **env: str) -> str:
     """Run main() with `typed` at the prompt and `history` as the watcher CSV."""
     buf = io.StringIO()
     # Blank NO_COLOR/FORCE_COLOR so the developer's own shell can't switch
@@ -376,7 +377,7 @@ def run_main(typed: str, history: Path, **env: str) -> str:
             unittest.mock.patch.object(b, "COLOR", False), \
             unittest.mock.patch.dict(os.environ, env), \
             contextlib.redirect_stdout(buf):
-        b.main()
+        b.main(argv)
     return buf.getvalue()
 
 
@@ -696,6 +697,125 @@ class MainWithHistory(unittest.TestCase):
 ANSI = re.compile(r"\033\[[0-9;]*m")
 
 
+def run_summary(cohorts: dict, width: int = WIDE) -> str:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        b.print_summary(cohorts, width)
+    return buf.getvalue()
+
+
+class Summary(unittest.TestCase):
+    COHORTS = {
+        "2024-12": [("2026-02", 900.0), ("2026-01", 1000.0)],   # before 2025-01
+        **JULY_COHORTS,
+        "2025-09": [("2026-10", 14000.0)],                      # one month only
+        "2026-01": [("2026-10", 500.0), ("2026-09", 500.0)],    # stalled
+    }
+
+    def test_rows_from_2025_01_with_two_months(self):
+        rows = b.summary_rows(self.COHORTS)
+        self.assertEqual([r[0] for r in rows], ["2025-07", "2025-08", "2026-01"])
+        cohort, current, mean, median = rows[0]
+        self.assertEqual((current, round(mean), median), (9300, 722, 400))
+        self.assertEqual([r[0] for r in b.summary_rows(self.COHORTS, "2025-08")],
+                         ["2025-08", "2026-01"])
+
+    def test_matches_the_full_analysis(self):
+        # Same Likely/Median rows analyze() prints for 2025-07: 6.4 / 12.9
+        # months at the average, 11.6 / 23.2 at the median.
+        out = run_summary(self.COHORTS)
+        row = [ln.split() for ln in out.splitlines() if ln.startswith("  2025-07")]
+        self.assertEqual(row, [["2025-07", "9,300", "722/mo", "6.4mo", "12.9mo",
+                                "400/mo", "11.6mo", "23.2mo"]])
+        full = run_analyze(JULY_ENTERED)
+        for months in ("6.4 mo", "12.9 mo", "11.6 mo", "23.2 mo"):
+            self.assertIn(months, full)
+
+    def test_stalled_cohort_never_clears(self):
+        out = run_summary(self.COHORTS)
+        row = [ln.split() for ln in out.splitlines() if ln.startswith("  2026-01")]
+        self.assertEqual(row[0][1:], ["500", "0/mo", "never", "never",
+                                      "0/mo", "never", "never"])
+
+    def test_stacked_when_the_table_wont_fit(self):
+        out = run_summary(self.COHORTS, STACKED)
+        self.assertIn("2025-07  9,300 ahead", out)
+        lines = out.splitlines()
+        at = lines.index("  2025-07  9,300 ahead")
+        self.assertEqual(lines[at + 1].split(), ["likely", "722/mo", "6.4mo", "12.9mo"])
+        self.assertEqual(lines[at + 2].split(), ["median", "400/mo", "11.6mo", "23.2mo"])
+
+    def test_fits_and_strips_cleanly_at_every_width(self):
+        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
+            with self.subTest(width=width):
+                out = run_summary(self.COHORTS, width)
+                self.assertLessEqual(max(map(len, out.splitlines())), width)
+                self.assertFalse([ln for ln in out.splitlines() if ln != ln.rstrip()])
+                with unittest.mock.patch.object(b, "COLOR", True):
+                    colored = run_summary(self.COHORTS, width)
+                self.assertEqual(ANSI.sub("", colored), out)
+                for figure in ("722/mo", "12.9mo", "400/mo", "23.2mo", "never"):
+                    self.assertIn(figure, out)
+
+    def test_default_cohort_and_never_are_painted(self):
+        with unittest.mock.patch.object(b, "COLOR", True):
+            out = run_summary(self.COHORTS)
+        july = next(ln for ln in out.splitlines() if "2025-07" in ln)
+        self.assertTrue(july.startswith("\033[1m"))
+        self.assertIn("\033[31m  never", out)
+
+    def test_nothing_to_summarize(self):
+        out = run_summary({"2024-06": JULY_COHORTS["2025-07"]})
+        self.assertIn("No cohort from 2025-01 on has two months", out)
+
+    def test_gaps_are_flagged(self):
+        out = run_summary({"2025-03": [("2026-09", 900.0), ("2026-07", 1000.0)]})
+        self.assertIn("Months missing for 2025-03", out)
+        self.assertNotIn("Months missing", run_summary(self.COHORTS))
+
+    def test_time_to_clear(self):
+        self.assertEqual(b.time_to_clear(9300, 722, 0.5), 9300 * 0.5 / 722)
+        # Any positive pace clears eventually, however slow; none never does.
+        self.assertEqual(b.time_to_clear(10, 0.1), 100)
+        for rate in (0, -5):
+            self.assertEqual(b.time_to_clear(10, rate), float("inf"))
+
+    def test_cells_stay_inside_their_column(self):
+        for value in (0, 7, 9999999, 10000000, -9999999, 1e300, -1e300, 0.4):
+            self.assertLessEqual(len(b.fmt_count(value)), b.SUMMARY_CELL, value)
+        for months in (0, 1.25, 99999.9, 9999.94, 1e7, 1e300, float("inf")):
+            self.assertLessEqual(len(b.fmt_months_short(months)), b.SUMMARY_CELL,
+                                 months)
+        self.assertEqual(b.fmt_count(9300), "9,300")
+        self.assertEqual(b.fmt_months_short(12.94), "12.9mo")
+        # Each fallback kicks in only once the roomier form overflows.
+        self.assertEqual(b.fmt_months_short(999.94), "999.9mo")
+        self.assertEqual(b.fmt_months_short(1234.6), "1,235mo")
+        self.assertEqual(b.fmt_months_short(12345), "1e+04")
+        self.assertEqual(b.fmt_months_short(float("inf")), "never")
+
+
+class MainSummarize(unittest.TestCase):
+    def test_summarizes_without_prompting(self):
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch("builtins.input") as typed:
+            body = "".join(f"{p},{c},{n:.0f}\n"
+                           for c, series in JULY_COHORTS.items() for p, n in series)
+            out = run_main("", write_history(d, body + "Sept,2025-07,1\n"),
+                           ("--summarize",))
+        self.assertIn("COHORT SUMMARY", out)
+        self.assertIn("2025-08", out)
+        self.assertIn("Skipped unreadable rows", out)
+        self.assertNotIn("BURN-DOWN ANALYSIS", out)
+        self.assertNotIn("Pick a cohort", out)
+
+    def test_unknown_flag_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit):
+            run_main("", Path(d) / "none.csv", ("--sumarize",))
+
+
 def run_analyze_colored(entered: list[float], width: int = WIDE) -> str:
     with unittest.mock.patch.object(b, "COLOR", True):
         return run_analyze(entered, width)
@@ -857,6 +977,31 @@ class FuzzPipeline(unittest.TestCase):
                     self.assertGreaterEqual(n, 1)
                     for rate in (mine, theirs):
                         self.assertTrue(rate is None or rate <= 1.0)
+
+    def test_summary_never_breaks(self):
+        # Every cohort from the history, however odd its counts, gets a row
+        # that fits the terminal; nothing raises or leaks a NaN.
+        rng = random.Random(20261017)
+        for i in range(self.CASES):
+            cohorts = {}
+            for _ in range(rng.randint(0, 8)):
+                cohort = b.month_label(rng.randint(2024 * 12, 2027 * 12))
+                start = rng.randint(2025 * 12, 2027 * 12)
+                counts = self._random_backlog(rng)
+                if rng.random() < 0.1:
+                    counts = [c * 10 ** rng.randint(3, 300) for c in counts]
+                cohorts[cohort] = sorted(
+                    ((b.month_label(start + k), c) for k, c in enumerate(counts)
+                     if rng.random() < 0.9), reverse=True)
+            width = rng.randint(b.MIN_WIDTH, b.MAX_WIDTH)
+            with self.subTest(case=i, cohorts=cohorts, width=width):
+                out = run_summary(cohorts, width)
+                self.assertIn("COHORT SUMMARY", out)
+                self.assertNotIn("nan", out.lower())
+                self.assertNotIn("inf", out.lower())
+                self.assertLessEqual(max(map(len, out.splitlines())), width)
+                for row in b.summary_rows(cohorts):
+                    self.assertIn(row[0], out)
 
     def test_shrink_rate_compounds_back_to_the_end_count(self):
         # Applying the rate for `months` months has to land on `end` again.

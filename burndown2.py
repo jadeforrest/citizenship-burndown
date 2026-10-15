@@ -31,8 +31,14 @@ detected width.
 If flpt_watch.py has been recording flpt_history.csv, the prompt also offers
 each cohort it has tracked: type a cohort (2025-07) or its menu number and its
 monthly people-ahead counts are read out newest first, as if you'd pasted them.
+
+    python3 burndown2.py --summarize
+
+skips the prompt and prints a one-line summary for every cohort from 2025-01:
+the likely (average) and median paces and the months to 50% and 100% cleared.
 """
 
+import argparse
 import csv
 import math
 import os
@@ -684,6 +690,17 @@ def random_order_odds(
     print_lookahead(current, mean, recent, recent_n, width)
 
 
+def processed_per_month(entered: list[float]) -> list[float]:
+    """People cleared each month, oldest first, from counts given newest first."""
+    chrono = list(reversed(entered))
+    return [chrono[i] - chrono[i + 1] for i in range(len(chrono) - 1)]
+
+
+def time_to_clear(current: float, rate: float, fraction: float = 1.0) -> float:
+    """Months until `fraction` of `current` has cleared at `rate` a month."""
+    return current * fraction / rate if rate > 0 else float("inf")
+
+
 def analyze(entered: list[float], width: int | None = None,
             own: OwnCohort | None = None) -> None:
     if len(entered) < 2:
@@ -699,7 +716,7 @@ def analyze(entered: list[float], width: int | None = None,
     chrono = list(reversed(entered))
 
     # People processed each month (positive = queue shrinking).
-    processed = [chrono[i] - chrono[i + 1] for i in range(len(chrono) - 1)]
+    processed = processed_per_month(entered)
 
     # ---- direction sanity check -------------------------------------------
     net = chrono[-1] - chrono[0]  # newest - oldest
@@ -726,7 +743,7 @@ def analyze(entered: list[float], width: int | None = None,
     slow = mean - stdev   # -1 sigma
 
     def months_left(rate: float, fraction: float = 1.0) -> float:
-        return current * fraction / rate if rate > 0 else float("inf")
+        return time_to_clear(current, rate, fraction)
 
     # ---- report -----------------------------------------------------------
     banner = paint("=" * min(width, 60), "cyan")
@@ -808,6 +825,125 @@ def analyze(entered: list[float], width: int | None = None,
     print(paint("=" * width, "cyan") + "\n")
 
 
+# --summarize covers every tracked cohort from this application month on.
+SUMMARY_FROM = "2025-01"
+
+# Widest a summary count or month cell gets; fmt_count / fmt_months_short
+# degrade to e-notation rather than grow past it.
+SUMMARY_CELL = 7
+
+
+def fmt_count(value: float) -> str:
+    """A count with thousands separators, in at most SUMMARY_CELL characters."""
+    text = f"{value:,.0f}"
+    return text if len(text) <= SUMMARY_CELL else f"{value:.0e}"
+
+
+def fmt_months_short(months: float) -> str:
+    """Months to clear, in at most SUMMARY_CELL characters."""
+    if months == float("inf"):
+        return "never"
+    for text in (f"{months:.1f}mo", f"{months:,.0f}mo"):
+        if len(text) <= SUMMARY_CELL:
+            return text
+    return f"{months:.0e}"
+
+
+def summary_rows(cohorts: dict[str, list[tuple[str, float]]],
+                 start: str = SUMMARY_FROM) -> list[tuple[str, float, float, float]]:
+    """
+    (cohort, people ahead now, likely rate, median rate) for each cohort from
+    `start` on with two or more months of data — the same average and median
+    of monthly throughput analyze() calls Likely and Median.
+    """
+    rows = []
+    for cohort in cohort_menu(cohorts):
+        if cohort >= start:
+            entered = [count for _, count in cohorts[cohort]]
+            processed = processed_per_month(entered)
+            rows.append((cohort, entered[0], statistics.mean(processed),
+                         statistics.median(processed)))
+    return rows
+
+
+def summary_cells(current: float, rate: float) -> tuple[str, str, str]:
+    """Pace, time to 50% and time to 100% for one summary row."""
+    return (f"{fmt_count(rate)}/mo",
+            fmt_months_short(time_to_clear(current, rate, 0.5)),
+            fmt_months_short(time_to_clear(current, rate, 1.0)))
+
+
+def summary_group(values: tuple[str, str, str], pace_w: int) -> str:
+    """One pace's pace / 50% / 100% cells, with never-clearing times in red."""
+    pace, half, full = values
+    cells = [paint(f"{t:>{SUMMARY_CELL}}", *(("red",) if t == "never" else ()))
+             for t in (half, full)]
+    return f"{pace:>{pace_w}}  " + "  ".join(cells)
+
+
+SUMMARY_PACES = ("likely (avg)", "median")
+
+
+def print_summary_table(cells: list, ahead_w: int, pace_w: int) -> None:
+    """The summary as one row per cohort, both paces side by side."""
+    group_w = pace_w + 2 * (2 + SUMMARY_CELL)
+    lead = " " * (2 + 7 + 2 + ahead_w)
+    print(paint((lead + "".join(f"   {name:^{group_w}}"
+                                for name in SUMMARY_PACES)).rstrip(), "dim"))
+    heads = f"{'pace':>{pace_w}}  {'50%':>{SUMMARY_CELL}}  {'100%':>{SUMMARY_CELL}}"
+    print(paint(f"  {'cohort':<7}  {'ahead':>{ahead_w}}" + f"   {heads}" * 2, "dim"))
+    for cohort, ahead, likely, median in cells:
+        emph = ("bold",) if cohort == DEFAULT_COHORT else ()
+        print(paint(f"  {cohort:<7}  {ahead:>{ahead_w}}", *emph)
+              + f"   {summary_group(likely, pace_w)}   {summary_group(median, pace_w)}")
+
+
+def print_summary_stacked(cells: list, pace_w: int) -> None:
+    """The summary as a small block per cohort, one line per pace."""
+    print(paint(f"    {'':6}  {'pace':>{pace_w}}  {'50%':>{SUMMARY_CELL}}  "
+                f"{'100%':>{SUMMARY_CELL}}", "dim"))
+    for cohort, ahead, likely, median in cells:
+        print(paint(f"  {cohort}  {ahead} ahead", "bold"))
+        for name, values in zip(SUMMARY_PACES, (likely, median)):
+            print(f"    {name.split()[0]:<6}  {summary_group(values, pace_w)}")
+
+
+def print_summary(cohorts: dict[str, list[tuple[str, float]]], width: int) -> None:
+    """Likely and median times to 50% / 100% for every cohort from SUMMARY_FROM."""
+    banner = paint("=" * min(width, 60), "cyan")
+    print("\n" + banner)
+    print(paint("COHORT SUMMARY", "bold", "cyan"))
+    print(banner)
+    rows = summary_rows(cohorts)
+    if not rows:
+        print(wrap(f"No cohort from {SUMMARY_FROM} on has two months of data "
+                   f"in {HISTORY_PATH.name} yet.", width))
+        return
+    print(wrap(f"Months until 50% and 100% of the people ahead of each cohort "
+               f"from {SUMMARY_FROM} have cleared, at its average (likely) and "
+               "median monthly pace.", width))
+    print()
+
+    cells = [(cohort, fmt_count(current), summary_cells(current, mean),
+              summary_cells(current, median))
+             for cohort, current, mean, median in rows]
+    ahead_w = max(len("ahead"), *(len(c[1]) for c in cells))
+    pace_w = max(len("pace"), *(len(p[0]) for c in cells for p in c[2:]))
+    group_w = pace_w + 2 * (2 + SUMMARY_CELL)
+    if 2 + 7 + 2 + ahead_w + 2 * (3 + group_w) <= width:
+        print_summary_table(cells, ahead_w, pace_w)
+    else:
+        print_summary_stacked(cells, pace_w)
+
+    gaps = [c for c, *_ in rows if missing_months([p for p, _ in cohorts[c]])]
+    if gaps:
+        print()
+        print(paint(wrap(f"⚠  Months missing for {', '.join(gaps)}: their "
+                         "rates treat the recorded months as consecutive.",
+                         width, hanging="    "), "yellow"))
+    print(paint("=" * width, "cyan") + "\n")
+
+
 def print_cohort_menu(cohorts: dict, menu: list[str], width: int) -> None:
     print(wrap(f"Cohorts tracked in {HISTORY_PATH.name} (application month, "
                "months of data):", width))
@@ -867,16 +1003,35 @@ def resolve_input(raw: str, cohorts: dict, menu: list[str],
     return raw, cohort
 
 
-def main() -> None:
-    global COLOR
-    COLOR = color_enabled()
-    width = output_width()
-    rejected: list[int] = []
-    cohorts = load_cohorts(HISTORY_PATH, rejected)
+def warn_rejected(rejected: list[int], width: int) -> None:
+    """Flag the history rows load_cohorts couldn't read, by line number."""
     if rejected:
         lines = ", ".join(map(str, rejected))
         print(paint(wrap(f"⚠  Skipped unreadable rows in {HISTORY_PATH.name} "
                          f"(line{'s' if len(rejected) > 1 else ''} {lines}).", width, hanging="    "), "yellow"))
+
+
+def parse_args(argv) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Estimate how long the queue ahead of you will take to clear.")
+    parser.add_argument(
+        "--summarize", action="store_true",
+        help=f"no prompt: likely and median times to 50%% and 100%% for every "
+             f"cohort from {SUMMARY_FROM} in {HISTORY_PATH.name}")
+    return parser.parse_args(list(argv))
+
+
+def main(argv=()) -> None:
+    global COLOR
+    args = parse_args(argv)
+    COLOR = color_enabled()
+    width = output_width()
+    rejected: list[int] = []
+    cohorts = load_cohorts(HISTORY_PATH, rejected)
+    warn_rejected(rejected, width)
+    if args.summarize:
+        print_summary(cohorts, width)
+        return
     menu = cohort_menu(cohorts)
     default_cohort = DEFAULT_COHORT if DEFAULT_COHORT in menu else None
     print_prompt(cohorts, menu, default_cohort, width)
@@ -911,4 +1066,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
