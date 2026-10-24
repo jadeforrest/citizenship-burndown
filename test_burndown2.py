@@ -1337,6 +1337,93 @@ order score or estimate for it.
         self.assertIn("  no sweep        -  never  never  never  never\n=", out)
         self.assertEqual(b.fifo_paces(one["2025-07"]), [("no sweep", None)])
 
+    # The tests below were added to kill mutants the ones above let by.
+    def test_latest_period_is_the_newest_anywhere(self):
+        cohorts = {"2025-05": [("2026-08", 1.0)], "2025-06": [("2026-10", 1.0)],
+                   "2025-07": [("2026-09", 1.0)]}
+        self.assertEqual(b.latest_period(cohorts), "2026-10")
+
+    def test_order_score_edges(self):
+        # Any clearance at all is measurable, however small.
+        self.assertEqual(b.OrderScore(3, 1.0, 1.0, 0.0, 0.0).observed(), 1)
+        tiny = {"2025-07": [("2026-10", 0.0), ("2026-07", 1.0)],
+                "2025-08": [("2026-10", 0.0), ("2026-07", 1.0)]}
+        self.assertEqual(b.order_score(tiny, "2025-07", ["2025-07"], "2026-10", 3),
+                         b.OrderScore(3, 1.0, 1.0, 0.0, 0.0))
+        # Fewer files ahead than behind is still a score.
+        few = {"2025-07": [("2026-10", 0.0), ("2026-07", 100.0)],
+               "2025-08": [("2026-10", 500.0), ("2026-07", 600.0)]}
+        self.assertEqual(b.order_score(few, "2025-07", ["2025-07"], "2026-10", 3),
+                         b.OrderScore(3, 100.0, 100.0, 500.0, 0.0))
+
+    def test_sweep_edges(self):
+        # One a month through a cohort of one, starting now.
+        self.assertAlmostEqual(b.sweep_chance(1, 0, 0, 1, 1), 1 - b.STRAGGLERS)
+        self.assertAlmostEqual(b.sweep_chance(0.5, 0, -5, 1, 1), 0.5)
+        # A row without a sweep never gets one.
+        self.assertEqual(b.estimate_cells(0.0, 0.0, 1.0, None), ["never"] * 4)
+        # ESTIMATE_CAP is where "never" starts: a 50% chance just inside it
+        # is a figure, just past it isn't.
+        for months, shown in ((1199.5, "1199.5"), (1200.5, "never")):
+            background = 1 - 0.5 ** (1 / months)
+            self.assertEqual(b.estimate_cells(background, 0.0, 1.0, None)[1],
+                             shown, months)
+
+    def test_estimate_rows(self):
+        def render(paces, width):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                b.print_estimates(paces, 0.0, 7000.0, 1400.0, width)
+            return buf.getvalue()
+        paces = [("no sweep", None), ("shrinking", 0.0), ("growing", -50.0),
+                 ("sweep, recent 3 mo", 700.0)]
+        # Inline down to exactly the width it needs: 2 + 18 + 2 + 7 + 4 * 7.
+        self.assertEqual(render(paces, 57), """\
+                      pace/mo    25%    50%    75%    90%
+  no sweep                  -  never  never  never  never
+  shrinking                 0  never  never  never  never
+  growing                   0  never  never  never  never
+  sweep, recent 3 mo      700    7.5    8.0  never  never
+""")
+        self.assertEqual(render(paces, 56).splitlines()[:3], [
+            "    pace/mo    25%    50%    75%    90%",
+            "  no sweep", "          -  never  never  never  never"])
+
+    def test_table_without_a_latest_figure(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            b.print_fifo_table([b.CohortRates("earlier", None, (None, None))],
+                               "2025-07", WIDE)
+        self.assertEqual(buf.getvalue().splitlines()[1],
+                         "  earlier      n/a        n/a        n/a")
+
+    def test_comparison_spans_every_newer_cohort(self):
+        out = run_fifo(FIFO_COHORTS, WIDE, "2025-05")
+        self.assertIn("against everyone\n  from 2025-05 to 2025-07.", out)
+
+    def test_typical_rate_is_the_longest_window(self):
+        with unittest.mock.patch.object(b, "OWN_WINDOWS", (1, 3, 6)):
+            out = run_fifo(FIFO_COHORTS)
+        self.assertIn("\nTypical cohort, last 6 mo: 3.0% a month\n", out)
+        self.assertIn("  cohort   waiting  last 1 mo  last 3 mo  last 6 mo\n", out)
+
+    def test_growing_cohorts_clear_nothing_in_the_model(self):
+        # Every cohort's own count grows: the typical rate is negative, and
+        # the estimates treat that as no background at all.
+        grow = {c: [(p, n * (2 - k / 10)) for (p, n), k in zip(s, range(10))]
+                for c, s in FIFO_COHORTS.items()}
+        out = run_fifo(grow)
+        self.assertRegex(out, r"Typical cohort, last 6 mo: -\d+\.\d% a month")
+        self.assertIn("Every cohort clears 0.0% a month", " ".join(out.split()))
+        self.assertIn("  no sweep                  -  never  never  never  never",
+                      out)
+
+    def test_no_figure_note_is_painted_cleanly(self):
+        plain = run_fifo(FIFO_COHORTS, 60, "2025-08")
+        with unittest.mock.patch.object(b, "COLOR", True):
+            colored = run_fifo(FIFO_COHORTS, 60, "2025-08")
+        self.assertEqual(ANSI.sub("", colored), plain)
+        self.assertTrue(colored.endswith("\033[36m" + "=" * 60 + "\033[0m\n\n"))
 
 class MainFifo(unittest.TestCase):
     def history(self, d: str) -> Path:

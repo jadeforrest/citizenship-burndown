@@ -1203,7 +1203,7 @@ def print_fifo_table(rows: list[CohortRates], target: str, width: int) -> None:
     if 2 + 7 + 2 + 7 + sum(2 + len(h) for h in heads) > width:
         heads = [f"{n} mo" for n in OWN_WINDOWS]
     print(paint(f"  {'cohort':<7}  {'waiting':>7}"
-                + "".join(f"  {h:>{len(h)}}" for h in heads), "dim"))
+                + "".join(f"  {h}" for h in heads), "dim"))
     for row in rows:
         emph = ("bold",) if row.label == target else ()
         waiting = "n/a" if row.waiting is None else fmt_count(row.waiting)
@@ -1284,12 +1284,14 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
                "added to them.", width))
     print()
     print_fifo_table(rows, target, width)
-    background = background_rate(rows, len(OWN_WINDOWS) - 1)
+    typical = background_rate(rows, len(OWN_WINDOWS) - 1)
     print()
     label = f"Typical cohort, last {OWN_WINDOWS[-1]} mo"
-    print(stat_line(label, "n/a" if background is None
-                    else f"{fmt_pct(background)} a month", width,
+    print(stat_line(label, "n/a" if typical is None
+                    else f"{fmt_pct(typical)} a month", width,
                     pad=len(label) + 2))
+    # The model's background: a growing typical cohort clears nothing.
+    background = 0.0 if typical is None else max(typical, 0.0)
 
     own = own_cohort(cohorts, target).waiting
     if last not in own or target not in cohorts:
@@ -1307,7 +1309,7 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
     ahead = dict(cohorts[target])[last]
     print("\n" + paint(f"When will {target} be processed?", "bold", "cyan"))
     print(wrap(f"Months until your chance reaches each column. Every cohort "
-               f"clears {fmt_pct(max(background or 0.0, 0.0))} a month whatever "
+               f"clears {fmt_pct(background)} a month whatever "
                "its age (the typical rate above). A sweep of oldest files at "
                f"the row's pace reaches {target} once all but "
                f"{STRAGGLERS:.0%} of the {fmt_count(ahead)} ahead are gone, "
@@ -1316,7 +1318,7 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
                "waiting among the stragglers, which only the background "
                "clears. 'No sweep' is the current lull lasting.", width))
     print()
-    print_estimates(fifo_paces(cohorts[target]), background or 0.0, ahead,
+    print_estimates(fifo_paces(cohorts[target]), background, ahead,
                     own[last], width)
     print(paint("=" * width, "cyan") + "\n")
 
