@@ -11,6 +11,8 @@ proof-of-citizenship processing times:
   backlog will take to clear. The user pastes a comma-separated list of
   monthly backlog counts (newest first, oldest last); the script infers the
   monthly processing rate and prints low/likely/high time-remaining estimates.
+  `--summarize` and `--fifo` skip the prompt for a per-cohort summary and a
+  processing-order report (both described under Running).
 - [flpt_watch.py](flpt_watch.py) — polls IRCC's published processing-times
   feed hourly, tracks the `citizen-proofs-2025/07` people-ahead figure and
   wait-time estimate, and beeps and posts a macOS notification when
@@ -62,6 +64,29 @@ fits 80 columns; below its width it stacks into a block per cohort. Cells go
 through `fmt_count` / `fmt_months_short`, which never exceed `SUMMARY_CELL`
 characters, so only the ahead and month columns size themselves to the data.
 
+`python3 burndown2.py --fifo [COHORT]` (default `DEFAULT_COHORT`; `2025/7`
+style is normalised by `cohort_arg`) skips the prompt and asks how close to
+oldest-first the processing is. Only *settled* cohorts are compared
+(`settled_cohorts`: from `SUMMARY_FROM`, with a next cohort, and at least
+`FIFO_SETTLED` = 12 months older than the latest period, since late intake
+keeps swinging newer cohorts' own counts by thousands). It prints:
+
+- each settled cohort's own still-waiting count and compounded monthly
+  clearance over the `OWN_WINDOWS`, after an `earlier` row for everyone
+  before the first of them (`cohort_rates`);
+- the typical cohort's rate (`background_rate`, the median, so the front of a
+  sweep doesn't drag it up);
+- an `OrderScore` per window: of the files cleared, the share that were ahead
+  of COHORT versus COHORT and the newer settled cohorts, rescaled so 0 is
+  random order and 1 strict oldest-first;
+- months until COHORT's chance of being processed reaches each
+  `ESTIMATE_ODDS`, from `sweep_chance`: the background rate compounding, plus
+  an oldest-first sweep at the row's pace (none, recent, median, best
+  `RECENT_MONTHS` window) that reaches COHORT once all but `STRAGGLERS` (30%)
+  of the people ahead are gone and then drains COHORT to the same residue.
+  `months_to_chance` bisects it (it only rises), `inf` past `ESTIMATE_CAP`.
+  `STRAGGLERS` is a judgement from the 2026 sweep, not fitted.
+
 Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
 stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
 `FORCE_COLOR=1` forces it on through a pipe. `main()` sets the module-level
@@ -84,11 +109,12 @@ Run the tests with:
 python3 -m unittest test_burndown2 test_flpt_watch   # fast pass, ~0.2s
 ```
 
-The `FuzzPipeline` cases run 300 random inputs by default so the suite stays a
-quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):
+The `FuzzPipeline` and `FuzzFifo` cases run 300 random inputs by default so
+the suite stays a quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):
 
 ```bash
 BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown2.FuzzPipeline
+BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown2.FuzzFifo        # ~2s
 FLPT_FUZZ_CASES=5000 python3 -m unittest test_flpt_watch.FuzzSnapshots   # ~6s
 ```
 
@@ -98,9 +124,9 @@ bytecode caching (`python3 -B`, `PYTHONDONTWRITEBYTECODE=1`) and clear
 size and mtime-second unchanged, so Python silently reuses the stale `.pyc` and
 every such mutant appears to survive.
 
-The own-cohort block and the `--summarize` output are pinned by exact-text
-tests (added to kill text, padding and alignment mutants), so a wording or
-layout change there means updating those expected strings too.
+The own-cohort block and the `--summarize` and `--fifo` output are pinned by
+exact-text tests (added to kill text, padding and alignment mutants), so a
+wording or layout change there means updating those expected strings too.
 
 ```bash
 python3 flpt_watch.py          # run forever, checking hourly
@@ -177,7 +203,9 @@ History and prompt handling, ahead of the analysis pipeline:
 - `main(argv=())` takes its arguments explicitly (`__main__` passes
   `sys.argv[1:]`) so the tests, which run under unittest's own argv, can call
   it bare. `--summarize` goes to `summary_rows` → `print_summary` (which picks
-  `print_summary_table` or `print_summary_stacked`).
+  `print_summary_table` or `print_summary_stacked`); `--fifo` goes to
+  `print_fifo`, which prints `print_fifo_table`, `print_order` and
+  `print_estimates` in turn.
 
 The analysis itself is a small pipeline of pure functions, which `main()`
 wires to stdin/stdout:

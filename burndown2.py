@@ -37,6 +37,13 @@ monthly people-ahead counts are read out newest first, as if you'd pasted them.
 skips the prompt and prints a one-line summary for every cohort from 2025-01:
 its own applicants cleared last month, and the recent and median paces with
 the months to 50% and 100% cleared.
+
+    python3 burndown2.py --fifo [COHORT]
+
+skips the prompt and reports how close to oldest-first the processing is:
+each settled cohort's own monthly clearance, a 0 (random) to 1 (oldest-first)
+score, and months until COHORT (default 2025-07) is likely processed under a
+model of an oldest-first sweep on top of a steady age-blind background.
 """
 
 import argparse
@@ -999,6 +1006,321 @@ def print_summary(cohorts: dict[str, list[tuple[str, float]]], width: int) -> No
     print(paint("=" * width, "cyan") + "\n")
 
 
+# --fifo only compares cohorts at least this many months older than the latest
+# period. Late intake keeps landing in a month's cohort for most of a year (the
+# 2026 cohorts' own counts swung by tens of thousands), and a cohort still
+# growing has no clearance rate worth reading.
+FIFO_SETTLED = 12
+
+# Share of a cohort an oldest-first sweep leaves behind for later. The early-2026
+# sweep took 2024-12 and 2025-01 down to roughly 25-40% and moved on, and the
+# pre-2025 tail has hardly moved since.
+STRAGGLERS = 0.3
+
+# The chances --fifo times: months until you're this likely to have been processed.
+ESTIMATE_ODDS = (0.25, 0.50, 0.75, 0.90)
+
+# Furthest out months_to_chance() looks before calling it "never".
+ESTIMATE_CAP = 1200.0
+
+
+def latest_period(cohorts: dict[str, list[tuple[str, float]]]) -> str:
+    """The newest period any cohort has a figure for."""
+    return max(series[0][0] for series in cohorts.values())
+
+
+def settled_cohorts(cohorts: dict[str, list[tuple[str, float]]],
+                    start: str = SUMMARY_FROM) -> list[str]:
+    """
+    Cohorts from `start` on whose own still-waiting count can be read (the
+    next cohort has figures) and that are at least FIFO_SETTLED months older
+    than the latest period.
+    """
+    if not cohorts:
+        return []
+    newest = month_index(latest_period(cohorts))
+    return [c for c in cohorts
+            if c >= start and newest - month_index(c) >= FIFO_SETTLED
+            and own_cohort(cohorts, c).waiting]
+
+
+def window_rate(series: dict[str, float], last: str, months: int) -> float | None:
+    """shrink_rate() of `series` over the `months` ending at `last`, if both ends exist."""
+    first = month_label(month_index(last) - months)
+    if first in series and last in series:
+        return shrink_rate(series[first], series[last], months)
+    return None
+
+
+class CohortRates(NamedTuple):
+    """One --fifo table row: a cohort (or the tail before them) and its rates."""
+    label: str
+    waiting: float | None              # still waiting in the latest period
+    rates: tuple[float | None, ...]    # window_rate() for each OWN_WINDOWS
+
+
+def cohort_rates(cohorts: dict[str, list[tuple[str, float]]],
+                 names: list[str], last: str) -> list[CohortRates]:
+    """
+    The table rows: everyone before the first of `names` ("earlier", read
+    straight from its people-ahead count), then each cohort's own count.
+    """
+    tail = dict(cohorts[names[0]])
+    rows = [CohortRates("earlier", tail.get(last),
+                        tuple(window_rate(tail, last, n) for n in OWN_WINDOWS))]
+    for name in names:
+        waiting = own_cohort(cohorts, name).waiting
+        rows.append(CohortRates(name, waiting.get(last),
+                                tuple(window_rate(waiting, last, n)
+                                      for n in OWN_WINDOWS)))
+    return rows
+
+
+def background_rate(rows: list[CohortRates], window: int) -> float | None:
+    """
+    The median monthly clearance across the cohorts (not the tail) for the
+    `window`-th OWN_WINDOWS: what a file gets when no sweep is reaching it.
+    A median, so the one or two cohorts at the front of a sweep don't drag it up.
+    """
+    rates = [r.rates[window] for r in rows[1:] if r.rates[window] is not None]
+    return statistics.median(rates) if rates else None
+
+
+class OrderScore(NamedTuple):
+    """Who cleared over a window: the people ahead of a cohort, or it and newer."""
+    months: int
+    ahead_start: float
+    ahead_cleared: float
+    newer_start: float
+    newer_cleared: float
+
+    def observed(self) -> float | None:
+        """Share of the clearance that came from the people ahead."""
+        total = self.ahead_cleared + self.newer_cleared
+        return self.ahead_cleared / total if total > 0 else None
+
+    def random(self) -> float:
+        """That share if every file were equally likely: their share of the files."""
+        return self.ahead_start / (self.ahead_start + self.newer_start)
+
+    def score(self) -> float | None:
+        """0 for random order, 1 for strict oldest-first (all of it from ahead)."""
+        seen = self.observed()
+        if seen is None or self.random() >= 1:
+            return None
+        return (seen - self.random()) / (1 - self.random())
+
+
+def order_score(cohorts: dict[str, list[tuple[str, float]]], target: str,
+                newer: list[str], last: str, months: int) -> OrderScore | None:
+    """
+    Clearance over the `months` ending at `last` among the people ahead of
+    `target` and among `newer` (target and the settled cohorts after it).
+    None unless every one of them has figures at both ends.
+    """
+    first = month_label(month_index(last) - months)
+    series = [dict(cohorts.get(target, []))] + [own_cohort(cohorts, c).waiting
+                                                for c in newer]
+    if not newer or any(first not in s or last not in s for s in series):
+        return None
+    ahead, *own = series
+    newer_start = sum(s[first] for s in own)
+    if ahead[first] + newer_start <= 0:
+        return None
+    return OrderScore(months, ahead[first], ahead[first] - ahead[last],
+                      newer_start, newer_start - sum(s[last] for s in own))
+
+
+def describe_score(score: float | None) -> str:
+    """Plain words for an OrderScore.score()."""
+    if score is None:
+        return "nothing cleared"
+    if score >= 0.75:
+        return "close to oldest-first"
+    if score >= 0.25:
+        return "between random and oldest-first"
+    if score > -0.25:
+        return "close to random"
+    return "newer files first"
+
+
+def sweep_chance(months: float, background: float, ahead: float, waiting: float,
+                 pace: float) -> float:
+    """
+    Your chance of having been processed `months` from now, under a sweep plus
+    background model. Every month a share `background` of every cohort clears
+    whatever its age. Meanwhile an oldest-first sweep works through the people
+    ahead at `pace` a month, reaches your cohort once all but STRAGGLERS of them
+    are gone, and then clears `pace` of your cohort a month until it too is down
+    to STRAGGLERS. Files within a month are taken in random order.
+    """
+    base = max(background, 0.0)
+    swept = 0.0
+    if pace > 0 and waiting > 0:
+        arrive = max(ahead, 0.0) * (1 - STRAGGLERS) / pace
+        swept = min(max((months - arrive) * pace / waiting, 0.0), 1 - STRAGGLERS)
+    return 1 - (1 - base) ** months * (1 - swept)
+
+
+def months_to_chance(chance: float, background: float, ahead: float,
+                     waiting: float, pace: float) -> float:
+    """Months until sweep_chance() reaches `chance`; inf past ESTIMATE_CAP."""
+    def reached(m: float) -> bool:
+        return sweep_chance(m, background, ahead, waiting, pace) >= chance
+    if not reached(ESTIMATE_CAP):
+        return float("inf")
+    lo, hi = 0.0, ESTIMATE_CAP
+    for _ in range(60):     # sweep_chance only rises with time, so bisect
+        mid = (lo + hi) / 2
+        lo, hi = (lo, mid) if reached(mid) else (mid, hi)
+    return hi
+
+
+def best_pace(processed: list[float]) -> float:
+    """The fastest average over any RECENT_MONTHS consecutive months."""
+    n = min(RECENT_MONTHS, len(processed))
+    return max(statistics.mean(processed[i:i + n])
+               for i in range(len(processed) - n + 1))
+
+
+def fifo_paces(series: list[tuple[str, float]]) -> list[tuple[str, float | None]]:
+    """
+    The --fifo estimate rows: (label, sweep pace); None for no sweep at all,
+    the only row when there's a single month and so no pace.
+    """
+    processed = processed_per_month([count for _, count in series])
+    if not processed:
+        return [("no sweep", None)]
+    return [("no sweep", None),
+            (f"sweep, recent {RECENT_MONTHS} mo", recent_pace(processed)[0]),
+            ("sweep, median", statistics.median(processed)),
+            (f"sweep, best {RECENT_MONTHS} mo", best_pace(processed))]
+
+
+def print_fifo_table(rows: list[CohortRates], target: str, width: int) -> None:
+    """Each settled cohort's own monthly clearance over the OWN_WINDOWS."""
+    heads = [f"last {n} mo" for n in OWN_WINDOWS]
+    if 2 + 7 + 2 + 7 + sum(2 + len(h) for h in heads) > width:
+        heads = [f"{n} mo" for n in OWN_WINDOWS]
+    print(paint(f"  {'cohort':<7}  {'waiting':>7}"
+                + "".join(f"  {h:>{len(h)}}" for h in heads), "dim"))
+    for row in rows:
+        emph = ("bold",) if row.label == target else ()
+        waiting = "n/a" if row.waiting is None else fmt_count(row.waiting)
+        cells = ""
+        for head, rate in zip(heads, row.rates):
+            text, tone = rate_cell(rate)
+            cells += "  " + paint(f"{text:>{len(head)}}", *emph, *tone)
+        print(paint(f"  {row.label:<7}  {waiting:>7}", *emph) + cells)
+
+
+def print_order(scores: list[OrderScore], target: str, newer: list[str],
+                width: int) -> None:
+    """The oldest-first score for each window, with the shares behind it."""
+    span = target if newer == [target] else f"{target} to {newer[-1]}"
+    print(wrap(f"Of the files cleared, the share that were ahead of {target}, "
+               f"against everyone from {span}. Strict oldest-first would make "
+               "it 100%; random order would match their share of the files.",
+               width, indent="  ", hanging="  "))
+    for s in scores:
+        seen, score = s.observed(), s.score()
+        seen_t = "n/a" if seen is None else f"{seen * 100:.0f}%"
+        score_t = "n/a" if score is None else f"{score:.2f}"
+        print(wrap(f"Last {s.months} months: {fmt_count(s.ahead_cleared)} "
+                   f"ahead and {fmt_count(s.newer_cleared)} from {span} "
+                   f"cleared, {seen_t} ahead against {s.random() * 100:.0f}% "
+                   f"at random. Score {score_t} (0 random, 1 oldest-first): "
+                   f"{describe_score(score)}.",
+                   width, indent="    ", hanging="      "))
+
+
+def estimate_cells(background: float, ahead: float, waiting: float,
+                   pace: float | None) -> list[str]:
+    """One estimate row's months_to_chance() for each ESTIMATE_ODDS, as text."""
+    return [fmt_months_short(months_to_chance(q, background, ahead, waiting,
+                                              pace or 0.0))
+            for q in ESTIMATE_ODDS]
+
+
+def print_estimates(paces: list[tuple[str, float | None]], background: float,
+                    ahead: float, waiting: float, width: int) -> None:
+    """Months until your chance reaches each ESTIMATE_ODDS, one row per pace."""
+    rows = [(label, "-" if pace is None else fmt_count(max(pace, 0)),
+             estimate_cells(background, ahead, waiting, pace))
+            for label, pace in paces]
+    label_w = max(len(label) for label, _, _ in rows)
+    cell_w = max(len("never"), *(len(t) for *_, cells in rows for t in cells))
+    heads = "".join(f"  {q * 100:>{cell_w - 1}.0f}%" for q in ESTIMATE_ODDS)
+    inline = 2 + label_w + 2 + SUMMARY_CELL + len(heads) <= width
+    lead = f"  {'':{label_w}}  " if inline else "    "
+    print(paint(f"{lead}{'pace/mo':>{SUMMARY_CELL}}{heads}", "dim"))
+    for label, pace_t, cells in rows:
+        shown = "".join("  " + paint(f"{t:>{cell_w}}",
+                                     *(("red",) if t == "never" else ()))
+                        for t in cells)
+        print(f"  {label:<{label_w}}  {pace_t:>{SUMMARY_CELL}}{shown}" if inline
+              else f"  {label}\n    {pace_t:>{SUMMARY_CELL}}{shown}")
+
+
+def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
+               target: str = DEFAULT_COHORT) -> None:
+    """How close to oldest-first processing is, and what that means for `target`."""
+    banner = paint("=" * min(width, 60), "cyan")
+    print("\n" + banner)
+    print(paint("PROCESSING ORDER", "bold", "cyan"))
+    print(banner)
+    names = settled_cohorts(cohorts)
+    if not names:
+        print(wrap(f"No cohort from {SUMMARY_FROM} on is {FIFO_SETTLED} months "
+                   f"old with figures in {HISTORY_PATH.name} yet.", width))
+        return
+    last = latest_period(cohorts)
+    rows = cohort_rates(cohorts, names, last)
+    print(wrap(f"Each cohort's own applicants still waiting in {last}, and the "
+               "share of them cleared per month (compounded) over the last "
+               f"{' and '.join(map(str, OWN_WINDOWS))} months. 'earlier' is "
+               f"everyone who applied before {names[0]}. Cohorts newer than "
+               f"{names[-1]} are left out: late applications are still being "
+               "added to them.", width))
+    print()
+    print_fifo_table(rows, target, width)
+    background = background_rate(rows, len(OWN_WINDOWS) - 1)
+    print()
+    label = f"Typical cohort, last {OWN_WINDOWS[-1]} mo"
+    print(stat_line(label, "n/a" if background is None
+                    else f"{fmt_pct(background)} a month", width,
+                    pad=len(label) + 2))
+
+    own = own_cohort(cohorts, target).waiting
+    if last not in own or target not in cohorts:
+        print()
+        print(wrap(f"No {target} own-cohort figure for {last}, so there's no "
+                   "order score or estimate for it.", width))
+        print(paint("=" * width, "cyan") + "\n")
+        return
+    newer = [target] + [c for c in names if c > target]
+    scores = [s for n in OWN_WINDOWS
+              if (s := order_score(cohorts, target, newer, last, n))]
+    print("\n" + paint("Oldest-first or random?", "bold", "cyan"))
+    print_order(scores, target, newer, width)
+
+    ahead = dict(cohorts[target])[last]
+    print("\n" + paint(f"When will {target} be processed?", "bold", "cyan"))
+    print(wrap(f"Months until your chance reaches each column. Every cohort "
+               f"clears {fmt_pct(max(background or 0.0, 0.0))} a month whatever "
+               "its age (the typical rate above). A sweep of oldest files at "
+               f"the row's pace reaches {target} once all but "
+               f"{STRAGGLERS:.0%} of the {fmt_count(ahead)} ahead are gone, "
+               f"then works through {target}'s {fmt_count(own[last])} until "
+               f"{STRAGGLERS:.0%} are left. Past {1 - STRAGGLERS:.0%} you're "
+               "waiting among the stragglers, which only the background "
+               "clears. 'No sweep' is the current lull lasting.", width))
+    print()
+    print_estimates(fifo_paces(cohorts[target]), background or 0.0, ahead,
+                    own[last], width)
+    print(paint("=" * width, "cyan") + "\n")
+
+
 def print_cohort_menu(cohorts: dict, menu: list[str], width: int) -> None:
     print(wrap(f"Cohorts tracked in {HISTORY_PATH.name} (application month, "
                "months of data):", width))
@@ -1066,6 +1388,14 @@ def warn_rejected(rejected: list[int], width: int) -> None:
                          f"(line{'s' if len(rejected) > 1 else ''} {lines}).", width, hanging="    "), "yellow"))
 
 
+def cohort_arg(text: str) -> str:
+    """argparse type for --fifo: a month, normalised by month_key()."""
+    cohort = month_key(text)
+    if cohort is None:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM month: {text!r}")
+    return cohort
+
+
 def parse_args(argv) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Estimate how long the queue ahead of you will take to clear.")
@@ -1073,6 +1403,11 @@ def parse_args(argv) -> argparse.Namespace:
         "--summarize", action="store_true",
         help=f"no prompt: recent and median times to 50%% and 100%% for every "
              f"cohort from {SUMMARY_FROM} in {HISTORY_PATH.name}")
+    parser.add_argument(
+        "--fifo", nargs="?", const=DEFAULT_COHORT, metavar="COHORT",
+        type=cohort_arg,
+        help=f"no prompt: how close to oldest-first processing is, and when "
+             f"COHORT (default {DEFAULT_COHORT}) is likely to be processed")
     return parser.parse_args(list(argv))
 
 
@@ -1086,6 +1421,9 @@ def main(argv=()) -> None:
     warn_rejected(rejected, width)
     if args.summarize:
         print_summary(cohorts, width)
+        return
+    if args.fifo:
+        print_fifo(cohorts, width, args.fifo)
         return
     menu = cohort_menu(cohorts)
     default_cohort = DEFAULT_COHORT if DEFAULT_COHORT in menu else None
