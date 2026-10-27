@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Two independent, stdlib-only Python scripts for tracking Canadian citizenship
 proof-of-citizenship processing times:
 
-- [burndown2.py](burndown2.py) — interactive CLI that estimates how long a
+- [burndown.py](burndown.py) — interactive CLI that estimates how long a
   backlog will take to clear. The user pastes a comma-separated list of
   monthly backlog counts (newest first, oldest last); the script infers the
   monthly processing rate and prints low/likely/high time-remaining estimates.
@@ -19,20 +19,20 @@ proof-of-citizenship processing times:
   `flpt_lastupdated` changes (i.e.
   IRCC has refreshed the feed). It also appends every
   `citizen-proofs-202x/*` cohort's people-ahead count and wait-time estimate to
-  `flpt_history.csv` whenever they change, which `burndown2.py` reads.
+  `flpt_history.csv` whenever they change, which `burndown.py` reads.
 
 There is no build step, package manifest, or linter configured in this repo.
-[test_burndown2.py](test_burndown2.py) and
+[test_burndown.py](test_burndown.py) and
 [test_flpt_watch.py](test_flpt_watch.py) use stdlib `unittest` only — keep
 them dependency-free.
 
 ## Running
 
 ```bash
-python3 burndown2.py
+python3 burndown.py
 ```
 
-`burndown2.py` is interactive: prompts for one line of input via `input("> ")`,
+`burndown.py` is interactive: prompts for one line of input via `input("> ")`,
 then prints the analysis to stdout. When `flpt_history.csv` exists it first
 lists every cohort with two or more months of data; the prompt accepts a menu
 number, a cohort (`2025-07` or `2025/07`), or pasted counts. Pressing return
@@ -49,10 +49,10 @@ one line per quantile. No figure is dropped at any width — only its shape
 changes. Prose wraps at `PROSE_WIDTH` (78) even on wider terminals.
 
 ```bash
-BURNDOWN_WIDTH=50 python3 burndown2.py   # check the narrow layouts
+BURNDOWN_WIDTH=50 python3 burndown.py   # check the narrow layouts
 ```
 
-`python3 burndown2.py --summarize` skips the prompt and prints one row per
+`python3 burndown.py --summarize` skips the prompt and prints one row per
 cohort from `SUMMARY_FROM` (2025-01) with two or more months of history: people
 ahead now; "cleared", how many of the cohort's own applicants were processed
 in its latest month (`own_last_month`: the drop in `own_cohort`'s
@@ -64,7 +64,7 @@ fits 80 columns; below its width it stacks into a block per cohort. Cells go
 through `fmt_count` / `fmt_months_short`, which never exceed `SUMMARY_CELL`
 characters, so only the ahead and month columns size themselves to the data.
 
-`python3 burndown2.py --fifo [COHORT]` (default `DEFAULT_COHORT`; `2025/7`
+`python3 burndown.py --fifo [COHORT]` (default `DEFAULT_COHORT`; `2025/7`
 style is normalised by `cohort_arg`) skips the prompt and asks how close to
 oldest-first the processing is. Only *settled* cohorts are compared
 (`settled_cohorts`: from `SUMMARY_FROM`, with a next cohort, and at least
@@ -100,25 +100,25 @@ report byte for byte.
 To exercise the analysis logic without the interactive prompt, pipe input in:
 
 ```bash
-echo "10200, 10500, 11300, 11700, 13000, 14500, 15800" | python3 burndown2.py
+echo "10200, 10500, 11300, 11700, 13000, 14500, 15800" | python3 burndown.py
 ```
 
 Run the tests with:
 
 ```bash
-python3 -m unittest test_burndown2 test_flpt_watch   # fast pass, ~0.2s
+python3 -m unittest test_burndown test_flpt_watch   # fast pass, ~0.2s
 ```
 
 The `FuzzPipeline` and `FuzzFifo` cases run 300 random inputs by default so
 the suite stays a quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):
 
 ```bash
-BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown2.FuzzPipeline
-BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown2.FuzzFifo        # ~2s
+BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown.FuzzPipeline
+BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown.FuzzFifo        # ~2s
 FLPT_FUZZ_CASES=5000 python3 -m unittest test_flpt_watch.FuzzSnapshots   # ~6s
 ```
 
-When mutation-testing this repo by patching `burndown2.py` in place, disable
+When mutation-testing this repo by patching `burndown.py` in place, disable
 bytecode caching (`python3 -B`, `PYTHONDONTWRITEBYTECODE=1`) and clear
 `__pycache__` between runs. Same-length edits (`== 1` -> `== 2`) leave the file
 size and mtime-second unchanged, so Python silently reuses the stale `.pyc` and
@@ -146,7 +146,7 @@ date differ from its latest row, so every published month is recorded even
 when the figures are flat. Rows are append-only; the last row for a
 (period, cohort) wins. An empty or missing file is seeded from `SEED_HISTORY`
 (hand-recorded 2025-07 months, `observed_at` = `seed`) on the next run; to
-re-seed, delete the file. Hand edits are fine — keep the header. `burndown2`
+re-seed, delete the file. Hand edits are fine — keep the header. `burndown`
 normalises hand-typed months (`2026-9`, `2026/09`) and thousands separators,
 and skips rows it can't read (a period or cohort that isn't a month, a count
 that isn't a finite number >= 0), listing their line numbers above the menu.
@@ -181,7 +181,7 @@ and retried on the next run on its own; letting it escape would skip
 - `snapshot_rows` → `changed_rows` → `append_history`, wrapped by
   `record_history`, which seeds an empty file via `seed_rows` first.
 
-### burndown2.py
+### burndown.py
 
 History and prompt handling, ahead of the analysis pipeline:
 

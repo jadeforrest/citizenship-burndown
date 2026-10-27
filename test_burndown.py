@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Tests for burndown2.py.
+Tests for burndown.py.
 
 Stdlib-only (unittest), to match the rest of the repo — no dependencies to
 install, just:
 
-    python3 -m unittest test_burndown2 -v
+    python3 -m unittest test_burndown -v
 
 The fuzz cases at the bottom run a small number of random inputs by default so
 this stays a fast pre-commit check. Crank it for a longer campaign with:
 
-    BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown2.FuzzPipeline
+    BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown.FuzzPipeline
 """
 
 import contextlib
@@ -27,7 +27,7 @@ import unittest.mock
 
 from pathlib import Path
 
-import burndown2 as b
+import burndown as b
 
 
 def chrono_to_processed(chrono: list[float]) -> list[float]:

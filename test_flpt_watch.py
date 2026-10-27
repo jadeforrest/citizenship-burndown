@@ -2,7 +2,7 @@
 """
 Tests for flpt_watch.py's history recording.
 
-Stdlib-only (unittest), like test_burndown2.py. Nothing here touches the
+Stdlib-only (unittest), like test_burndown.py. Nothing here touches the
 network, the real flpt_history.csv, or makes a sound:
 
     python3 -m unittest test_flpt_watch -v
@@ -22,7 +22,7 @@ import unittest.mock
 from datetime import datetime, timezone
 from pathlib import Path
 
-import burndown2
+import burndown
 import flpt_watch as w
 
 NOW = datetime(2026, 10, 8, 2, 0, tzinfo=timezone.utc)
@@ -209,10 +209,10 @@ class RecordHistory(unittest.TestCase):
 
     def test_burndown_reads_the_seeded_series(self):
         w.record_history(feed(), NOW, self.path)
-        series = burndown2.load_cohorts(self.path)["2025-07"]
+        series = burndown.load_cohorts(self.path)["2025-07"]
         self.assertEqual([c for _, c in series],
                          [9700, 10100, 10200, 10500, 11300, 11700, 13000, 14500, 15800])
-        self.assertEqual(burndown2.missing_months([p for p, _ in series]), [])
+        self.assertEqual(burndown.missing_months([p for p, _ in series]), [])
 
 
 class CheckOnce(unittest.TestCase):
@@ -346,7 +346,7 @@ class FuzzSnapshots(unittest.TestCase):
     Random feed sequences recorded one after another.
 
     Invariants: re-recording a snapshot is a no-op; the last row per cohort
-    always matches the latest feed; and burndown2 reads back exactly one count
+    always matches the latest feed; and burndown reads back exactly one count
     per (cohort, period), equal to the last one the feed published for it.
     """
 
@@ -405,13 +405,13 @@ class FuzzSnapshots(unittest.TestCase):
                                          row["people_ahead_text"], case)
                         if row["people_ahead"] is not None:
                             expected[(row["cohort"], row["period"])] = row["people_ahead"]
-                loaded = burndown2.load_cohorts(path)
+                loaded = burndown.load_cohorts(path)
                 flat = {(c, p): n for c, s in loaded.items() for p, n in s}
                 self.assertEqual(flat, expected, case)
                 for series in loaded.values():
                     periods = [p for p, _ in series]
                     self.assertEqual(periods, sorted(set(periods), reverse=True))
-                    burndown2.missing_months(periods)
+                    burndown.missing_months(periods)
 
     def test_check_once_survives_any_snapshot(self):
         rng = random.Random(4321)

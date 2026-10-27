@@ -32,13 +32,13 @@ If flpt_watch.py has been recording flpt_history.csv, the prompt also offers
 each cohort it has tracked: type a cohort (2025-07) or its menu number and its
 monthly people-ahead counts are read out newest first, as if you'd pasted them.
 
-    python3 burndown2.py --summarize
+    python3 burndown.py --summarize
 
 skips the prompt and prints a one-line summary for every cohort from 2025-01:
 its own applicants cleared last month, and the recent and median paces with
 the months to 50% and 100% cleared.
 
-    python3 burndown2.py --fifo [COHORT]
+    python3 burndown.py --fifo [COHORT]
 
 skips the prompt and reports how close to oldest-first the processing is:
 each settled cohort's own monthly clearance, a 0 (random) to 1 (oldest-first)

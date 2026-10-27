@@ -9,7 +9,7 @@ IRCC has refreshed the feed with new data).
 
 Every citizen-proofs-202x/* cohort's people-ahead count and wait-time
 estimate is also appended to flpt_history.csv whenever it changes, so
-burndown2.py can analyze any cohort's month-by-month backlog. The first run
+burndown.py can analyze any cohort's month-by-month backlog. The first run
 against an empty history seeds it with SEED_HISTORY before recording the live
 snapshot.
 
