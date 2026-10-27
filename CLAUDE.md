@@ -53,14 +53,15 @@ BURNDOWN_WIDTH=50 python3 burndown.py   # check the narrow layouts
 ```
 
 `python3 burndown.py --summarize` skips the prompt and prints one row per
-cohort from `SUMMARY_FROM` (2025-01) with two or more months of history: people
+cohort from `SUMMARY_FROM` (2025-01) through the newest in the history: people
 ahead now; "cleared", how many of the cohort's own applicants were processed
 in its latest month (`own_last_month`: the drop in `own_cohort`'s
 still-waiting count, `n/a` unless the next cohort has that month and the one
 before); then the Recent (`recent_pace`, last `RECENT_MONTHS`) and Median paces
 with the months to 50% and 100% cleared — the same figures as those rows of
-the full report. Units live in the headings (`pace/mo`, months) so the table
-fits 80 columns; below its width it stacks into a block per cohort. Cells go
+the full report. A cohort with only one month (normally the newest) shows its
+people ahead with every pace cell `n/a`. Units live in the headings (`pace/mo`,
+months) so the table fits 80 columns; below its width it stacks into a block per cohort. Cells go
 through `fmt_count` / `fmt_months_short`, which never exceed `SUMMARY_CELL`
 characters, so only the ahead and month columns size themselves to the data.
 

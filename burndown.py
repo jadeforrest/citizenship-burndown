@@ -884,24 +884,30 @@ def own_last_month(cohorts: dict[str, list[tuple[str, float]]],
 
 def summary_rows(cohorts: dict[str, list[tuple[str, float]]],
                  start: str = SUMMARY_FROM
-                 ) -> list[tuple[str, float, float | None, float, float]]:
+                 ) -> list[tuple[str, float, float | None,
+                                 float | None, float | None]]:
     """
     (cohort, people ahead now, own applicants cleared last month, recent
-    rate, median rate) for each cohort from `start` on with two or more
-    months of data — the same paces analyze() calls Recent and Median.
+    rate, median rate) for every cohort from `start` on — the same paces
+    analyze() calls Recent and Median. A cohort with a single month of data
+    (the newest, usually) has no paces yet: both are None.
     """
     rows = []
-    for cohort in cohort_menu(cohorts):
-        if cohort >= start:
-            entered = [count for _, count in cohorts[cohort]]
+    for cohort, series in cohorts.items():
+        if cohort >= start and series:
+            entered = [count for _, count in series]
             processed = processed_per_month(entered)
+            paces = ((recent_pace(processed)[0], statistics.median(processed))
+                     if processed else (None, None))
             rows.append((cohort, entered[0], own_last_month(cohorts, cohort),
-                         recent_pace(processed)[0], statistics.median(processed)))
+                         *paces))
     return rows
 
 
-def summary_cells(current: float, rate: float) -> tuple[str, str, str]:
+def summary_cells(current: float, rate: float | None) -> tuple[str, str, str]:
     """Pace, time to 50% and time to 100% for one summary row."""
+    if rate is None:
+        return ("n/a",) * 3
     return (fmt_count(rate),
             fmt_months_short(time_to_clear(current, rate, 0.5)),
             fmt_months_short(time_to_clear(current, rate, 1.0)))
@@ -980,15 +986,16 @@ def print_summary(cohorts: dict[str, list[tuple[str, float]]], width: int) -> No
     print(banner)
     rows = summary_rows(cohorts)
     if not rows:
-        print(wrap(f"No cohort from {SUMMARY_FROM} on has two months of data "
-                   f"in {HISTORY_PATH.name} yet.", width))
+        print(wrap(f"No cohort from {SUMMARY_FROM} on in {HISTORY_PATH.name} "
+                   "yet.", width))
         return
     print(wrap(f"Months until 50% and 100% of the people ahead of each cohort "
                f"from {SUMMARY_FROM} have cleared, at its recent pace (the "
                f"average of its last {RECENT_MONTHS} months) and its median "
                "monthly pace. Cleared is how many of the cohort's own "
                "applicants were processed last month (the gap to the next "
-               "cohort, so rounded to the nearest 100; n/a without it).", width))
+               "cohort, so rounded to the nearest 100; n/a without it). A "
+               "cohort with one month of data has no pace yet.", width))
     print()
 
     cells, w = summary_layout(rows)

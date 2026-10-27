@@ -810,14 +810,18 @@ class Summary(unittest.TestCase):
         "2026-01": [("2026-10", 500.0), ("2026-09", 500.0)],    # stalled
     }
 
-    def test_rows_from_2025_01_with_two_months(self):
+    def test_rows_from_2025_01_to_the_newest_cohort(self):
         rows = b.summary_rows(self.COHORTS)
-        self.assertEqual([r[0] for r in rows], ["2025-07", "2025-08", "2026-01"])
+        self.assertEqual([r[0] for r in rows],
+                         ["2025-07", "2025-08", "2025-09", "2026-01"])
         cohort, current, cleared, recent, median = rows[0]
         self.assertEqual((current, cleared, recent, median), (9300, 0, 300, 400))
-        self.assertEqual([r[2] for r in rows], [0, None, None])
+        self.assertEqual([r[2] for r in rows], [0, None, None, None])
+        # One month of data: people ahead, but no pace to clear them at yet.
+        self.assertEqual(rows[2], ("2025-09", 14000, None, None, None))
         self.assertEqual([r[0] for r in b.summary_rows(self.COHORTS, "2025-08")],
-                         ["2025-08", "2026-01"])
+                         ["2025-08", "2025-09", "2026-01"])
+        self.assertEqual(b.summary_rows({"2025-07": []}), [])
 
     def test_matches_the_full_analysis(self):
         # Same Recent/Median rows analyze() prints for 2025-07: 15.5 / 31.0
@@ -863,6 +867,8 @@ class Summary(unittest.TestCase):
         self.assertEqual(lines[at + 1].split(), ["recent", "300", "15.5", "31.0"])
         self.assertEqual(lines[at + 2].split(), ["median", "400", "11.6", "23.2"])
         self.assertIn("  2025-08  11,500 ahead, n/a cleared", lines)
+        at = lines.index("  2025-09  14,000 ahead, n/a cleared")
+        self.assertEqual(lines[at + 1].split(), ["recent", "n/a", "n/a", "n/a"])
 
     def test_fits_and_strips_cleanly_at_every_width(self):
         for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
@@ -916,7 +922,7 @@ class Summary(unittest.TestCase):
 
     def test_nothing_to_summarize(self):
         out = run_summary({"2024-06": JULY_COHORTS["2025-07"]})
-        self.assertIn("No cohort from 2025-01 on has two months", out)
+        self.assertIn("No cohort from 2025-01 on in", out)
 
     def test_gaps_are_flagged(self):
         out = run_summary({"2025-03": [("2026-09", 900.0), ("2026-07", 1000.0)]})
@@ -956,12 +962,13 @@ Months until 50% and 100% of the people ahead of each cohort from 2025-01 have
 cleared, at its recent pace (the average of its last 3 months) and its median
 monthly pace. Cleared is how many of the cohort's own applicants were
 processed last month (the gap to the next cohort, so rounded to the nearest
-100; n/a without it).
+100; n/a without it). A cohort with one month of data has no pace yet.
 
                                  recent (3 mo)              median
   cohort    ahead  cleared   pace/mo    50%   100%   pace/mo    50%   100%
   2025-07   9,300        0       300   15.5   31.0       400   11.6   23.2
   2025-08  11,500      n/a       300   19.2   38.3       500   11.5   23.0
+  2025-09  14,000      n/a       n/a    n/a    n/a       n/a    n/a    n/a
   2026-01     500      n/a         0  never  never         0  never  never
 """ + "=" * WIDE + "\n\n")
 
@@ -975,6 +982,9 @@ processed last month (the gap to the next cohort, so rounded to the nearest
   2025-08  11,500 ahead, n/a cleared
     recent      300   19.2   38.3
     median      500   11.5   23.0
+  2025-09  14,000 ahead, n/a cleared
+    recent      n/a    n/a    n/a
+    median      n/a    n/a    n/a
   2026-01  500 ahead, n/a cleared
     recent        0  never  never
     median        0  never  never
@@ -1002,8 +1012,7 @@ processed last month (the gap to the next cohort, so rounded to the nearest
 ============================================================
 COHORT SUMMARY
 ============================================================
-No cohort from 2025-01 on has two months of data in
-flpt_history.csv yet.
+No cohort from 2025-01 on in flpt_history.csv yet.
 """)
         with unittest.mock.patch.object(b, "COLOR", True):
             self.assertIn("\033[33m⚠  Months missing", run_summary(gappy, 60))
