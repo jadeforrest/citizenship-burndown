@@ -1060,6 +1060,16 @@ No cohort from 2025-01 on in flpt_history.csv yet.
         # Each end degrades like any other summary month cell.
         self.assertEqual(b.best_guess(1e300, 1, 1), "5e+299-1e+300m")
 
+    def test_best_guess_heading_sits_over_a_wider_range(self):
+        cells, w = b.summary_layout([("2025-07", 1234567.0, None, 1.0, 1.0)])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            b.print_summary_table(cells, w)
+        heads, row = buf.getvalue().splitlines()[1:]
+        self.assertTrue(heads.endswith("       best guess"), heads)
+        self.assertTrue(row.endswith("   617,284-1e+06m"), row)
+        self.assertEqual(len(heads), len(row))
+
 
 class MainSummarize(unittest.TestCase):
     def test_summarizes_without_prompting(self):
