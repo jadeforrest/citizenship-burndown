@@ -829,7 +829,7 @@ class Summary(unittest.TestCase):
         out = run_summary(self.COHORTS)
         row = [ln.split() for ln in out.splitlines() if ln.startswith("  2025-07")]
         self.assertEqual(row, [["2025-07", "9,300", "0", "300", "15.5", "31.0",
-                                "400", "11.6", "23.2"]])
+                                "400", "11.6", "23.2", "13.6-27.1m"]])
         full = run_analyze(JULY_ENTERED)
         recent_row = next(ln for ln in full.splitlines() if "Recent (3 mo pace)" in ln)
         median_row = next(ln for ln in full.splitlines() if ln.strip().startswith("Median "))
@@ -849,7 +849,7 @@ class Summary(unittest.TestCase):
         at = next(i for i, ln in enumerate(lines) if ln.startswith("  cohort"))
         labels, heads = lines[at - 1], lines[at]
         groups = [m.start() for m in re.finditer("pace/mo", heads)]
-        spans = [(groups[0], groups[1] - 3), (groups[1], len(heads))]
+        spans = [(groups[0], groups[1] - 3), (groups[1], heads.rindex("100%") + 4)]
         for name, (start, end) in zip(b.SUMMARY_PACES, spans):
             middle = labels.index(name) + len(name) / 2
             self.assertLessEqual(abs(middle - (start + end) / 2), 1, name)
@@ -858,7 +858,7 @@ class Summary(unittest.TestCase):
         out = run_summary(self.COHORTS)
         row = [ln.split() for ln in out.splitlines() if ln.startswith("  2026-01")]
         self.assertEqual(row[0][1:], ["500", "n/a", "0", "never", "never",
-                                      "0", "never", "never"])
+                                      "0", "never", "never", "never"])
 
     def test_stacked_when_the_table_wont_fit(self):
         out = run_summary(self.COHORTS, STACKED)
@@ -866,6 +866,7 @@ class Summary(unittest.TestCase):
         at = lines.index("  2025-07  9,300 ahead, 0 cleared")
         self.assertEqual(lines[at + 1].split(), ["recent", "300", "15.5", "31.0"])
         self.assertEqual(lines[at + 2].split(), ["median", "400", "11.6", "23.2"])
+        self.assertEqual(lines[at + 3].split(), ["best", "13.6-27.1m"])
         self.assertIn("  2025-08  11,500 ahead, n/a cleared", lines)
         at = lines.index("  2025-09  14,000 ahead, n/a cleared")
         self.assertEqual(lines[at + 1].split(), ["recent", "n/a", "n/a", "n/a"])
@@ -880,7 +881,7 @@ class Summary(unittest.TestCase):
                     colored = run_summary(self.COHORTS, width)
                 self.assertEqual(ANSI.sub("", colored), out)
                 for figure in ("300", "31.0", "400", "23.2", "never", "n/a",
-                               "pace/mo"):
+                               "pace/mo", "13.6-27.1m"):
                     self.assertIn(figure, out)
 
     def test_default_cohort_and_never_are_painted(self):
@@ -889,6 +890,8 @@ class Summary(unittest.TestCase):
         july = next(ln for ln in out.splitlines() if "2025-07" in ln)
         self.assertTrue(july.startswith("\033[1m"))
         self.assertRegex(out, "\033\\[31m *never")
+        stalled = next(ln for ln in out.splitlines() if "2026-01" in ln)
+        self.assertTrue(stalled.endswith("   \033[31m     never\033[0m"), stalled)
 
     def test_own_last_month(self):
         self.assertEqual(b.own_last_month(JULY_COHORTS, "2025-07"), 0)
@@ -962,14 +965,15 @@ Months until 50% and 100% of the people ahead of each cohort from 2025-01 have
 cleared, at its recent pace (the average of its last 3 months) and its median
 monthly pace. Cleared is how many of the cohort's own applicants were
 processed last month (the gap to the next cohort, so rounded to the nearest
-100; n/a without it). A cohort with one month of data has no pace yet.
+100; n/a without it). Best guess averages the two paces' times to 50% and to
+100%, as a range. A cohort with one month of data has no pace yet.
 
                                  recent (3 mo)              median
-  cohort    ahead  cleared   pace/mo    50%   100%   pace/mo    50%   100%
-  2025-07   9,300        0       300   15.5   31.0       400   11.6   23.2
-  2025-08  11,500      n/a       300   19.2   38.3       500   11.5   23.0
-  2025-09  14,000      n/a       n/a    n/a    n/a       n/a    n/a    n/a
-  2026-01     500      n/a         0  never  never         0  never  never
+  cohort    ahead  cleared   pace/mo    50%   100%   pace/mo    50%   100%   best guess
+  2025-07   9,300        0       300   15.5   31.0       400   11.6   23.2   13.6-27.1m
+  2025-08  11,500      n/a       300   19.2   38.3       500   11.5   23.0   15.3-30.7m
+  2025-09  14,000      n/a       n/a    n/a    n/a       n/a    n/a    n/a          n/a
+  2026-01     500      n/a         0  never  never         0  never  never        never
 """ + "=" * WIDE + "\n\n")
 
     def test_stacked_text(self):
@@ -979,22 +983,27 @@ processed last month (the gap to the next cohort, so rounded to the nearest
   2025-07  9,300 ahead, 0 cleared
     recent      300   15.5   31.0
     median      400   11.6   23.2
+    best               13.6-27.1m
   2025-08  11,500 ahead, n/a cleared
     recent      300   19.2   38.3
     median      500   11.5   23.0
+    best               15.3-30.7m
   2025-09  14,000 ahead, n/a cleared
     recent      n/a    n/a    n/a
     median      n/a    n/a    n/a
+    best                      n/a
   2026-01  500 ahead, n/a cleared
     recent        0  never  never
     median        0  never  never
+    best                    never
 """ + "=" * STACKED + "\n\n")
 
     def test_stacked_cohort_line_wraps_under_itself(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             b.print_summary_stacked(
-                [("2025-07", "999,999", "999,999", ("1", "2", "3"), ("4", "5", "6"))],
+                [("2025-07", "999,999", "999,999", ("1", "2", "3"), ("4", "5", "6"),
+                  "2-5m")],
                 b.SummaryWidths(7, 5), STACKED)
         self.assertEqual(buf.getvalue().splitlines()[1:3],
                          ["  2025-07  999,999 ahead, 999,999", "    cleared"])
@@ -1034,7 +1043,22 @@ No cohort from 2025-01 on in flpt_history.csv yet.
         # The pace cell has its own column; it doesn't widen the time cells.
         self.assertEqual(widths(1000.0, 999999.0, 999999.0), b.SummaryWidths(5, 5))
         # The 50% time can be the wider one: "617,284" beside "1e+06".
-        self.assertEqual(widths(1234567.0, 1.0, 1.0), b.SummaryWidths(5, 7))
+        self.assertEqual(widths(1234567.0, 1.0, 1.0), b.SummaryWidths(5, 7, 14))
+        # The best-guess column floors at its heading, "best guess".
+        self.assertEqual(widths(500.0, 500.0, 250.0).best, len("best guess"))
+
+    def test_best_guess(self):
+        # The recent and median times at each end, averaged: for 2025-07,
+        # (15.5 + 11.6) / 2 to (31.0 + 23.2) / 2.
+        self.assertEqual(b.best_guess(9300, 300, 400), "13.6-27.1m")
+        self.assertEqual(b.best_guess(1000, 100, 100), "5.0-10.0m")
+        # Either pace that never clears, or isn't known, decides the cell.
+        for recent, median in ((0, 400), (300, -5)):
+            self.assertEqual(b.best_guess(9300, recent, median), "never")
+        for recent, median in ((None, 400), (300, None), (None, None)):
+            self.assertEqual(b.best_guess(9300, recent, median), "n/a")
+        # Each end degrades like any other summary month cell.
+        self.assertEqual(b.best_guess(1e300, 1, 1), "5e+299-1e+300m")
 
 
 class MainSummarize(unittest.TestCase):

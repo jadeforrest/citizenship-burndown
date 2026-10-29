@@ -913,6 +913,21 @@ def summary_cells(current: float, rate: float | None) -> tuple[str, str, str]:
             fmt_months_short(time_to_clear(current, rate, 1.0)))
 
 
+def best_guess(current: float, recent: float | None,
+               median: float | None) -> str:
+    """
+    The recent and median times to 50% and to 100% cleared, each averaged,
+    as a range: "5.9-7.3m". "never" when either pace never clears.
+    """
+    if recent is None or median is None:
+        return "n/a"
+    half, full = ((time_to_clear(current, recent, f)
+                   + time_to_clear(current, median, f)) / 2 for f in (0.5, 1.0))
+    if full == float("inf"):
+        return "never"
+    return f"{fmt_months_short(half)}-{fmt_months_short(full)}m"
+
+
 class SummaryWidths(NamedTuple):
     """
     Column widths that vary with the data. The cleared and pace columns don't:
@@ -920,24 +935,27 @@ class SummaryWidths(NamedTuple):
     """
     ahead: int
     cell: int
+    best: int = len("best guess")
 
     def table(self) -> int:
         """Width of the side-by-side summary table."""
         return (2 + 7 + 2 + self.ahead + 2 + SUMMARY_CELL
-                + 2 * (3 + SUMMARY_CELL + 2 * (2 + self.cell)))
+                + 2 * (3 + SUMMARY_CELL + 2 * (2 + self.cell)) + 3 + self.best)
 
 
 def summary_layout(rows: list) -> tuple[list, SummaryWidths]:
     """summary_rows() rendered to text cells, and the column widths they need."""
     cells = [(cohort, fmt_count(current),
               "n/a" if cleared is None else fmt_count(cleared),
-              summary_cells(current, recent), summary_cells(current, median))
+              summary_cells(current, recent), summary_cells(current, median),
+              best_guess(current, recent, median))
              for cohort, current, cleared, recent, median in rows]
-    times = [t for *_, recent, median in cells for g in (recent, median)
+    times = [t for *_, recent, median, _ in cells for g in (recent, median)
              for t in g[1:]]
     return cells, SummaryWidths(
         ahead=max(len("ahead"), *(len(c[1]) for c in cells)),
-        cell=max(len("never"), *map(len, times)))
+        cell=max(len("never"), *map(len, times)),
+        best=max(len("best guess"), *(len(c[-1]) for c in cells)))
 
 
 def summary_group(values: tuple[str, str, str], w: SummaryWidths) -> str:
@@ -946,6 +964,11 @@ def summary_group(values: tuple[str, str, str], w: SummaryWidths) -> str:
     cells = [paint(f"{t:>{w.cell}}", *(("red",) if t == "never" else ()))
              for t in (half, full)]
     return f"{pace:>{SUMMARY_CELL}}  " + "  ".join(cells)
+
+
+def best_cell(best: str, width: int) -> str:
+    """The best-guess range right-aligned in `width`, in red if it's never."""
+    return paint(f"{best:>{width}}", *(("red",) if best == "never" else ()))
 
 
 SUMMARY_PACES = (f"recent ({RECENT_MONTHS} mo)", "median")
@@ -959,23 +982,27 @@ def print_summary_table(cells: list, w: SummaryWidths) -> None:
                                 for name in SUMMARY_PACES)).rstrip(), "dim"))
     heads = f"{'pace/mo':>{SUMMARY_CELL}}  {'50%':>{w.cell}}  {'100%':>{w.cell}}"
     print(paint(f"  {'cohort':<7}  {'ahead':>{w.ahead}}  "
-                f"{'cleared':>{SUMMARY_CELL}}" + f"   {heads}" * 2, "dim"))
-    for cohort, ahead, cleared, recent, median in cells:
+                f"{'cleared':>{SUMMARY_CELL}}" + f"   {heads}" * 2
+                + f"   {'best guess':>{w.best}}", "dim"))
+    for cohort, ahead, cleared, recent, median, best in cells:
         emph = ("bold",) if cohort == DEFAULT_COHORT else ()
         print(paint(f"  {cohort:<7}  {ahead:>{w.ahead}}  {cleared:>{SUMMARY_CELL}}",
                     *emph)
-              + f"   {summary_group(recent, w)}   {summary_group(median, w)}")
+              + f"   {summary_group(recent, w)}   {summary_group(median, w)}"
+              + f"   {best_cell(best, w.best)}")
 
 
 def print_summary_stacked(cells: list, w: SummaryWidths, width: int) -> None:
     """The summary as a small block per cohort, one line per pace."""
     print(paint(f"    {'':6}  {'pace/mo':>{SUMMARY_CELL}}  {'50%':>{w.cell}}  "
                 f"{'100%':>{w.cell}}", "dim"))
-    for cohort, ahead, cleared, recent, median in cells:
+    group_w = SUMMARY_CELL + 2 * (2 + w.cell)
+    for cohort, ahead, cleared, recent, median, best in cells:
         print(paint(wrap(f"{cohort}  {ahead} ahead, {cleared} cleared", width,
                          indent="  ", hanging="    "), "bold"))
         for name, values in zip(SUMMARY_PACES, (recent, median)):
             print(f"    {name.split()[0]:<6}  {summary_group(values, w)}")
+        print(f"    {'best':<6}  {best_cell(best, group_w)}")
 
 
 def print_summary(cohorts: dict[str, list[tuple[str, float]]], width: int) -> None:
@@ -994,8 +1021,9 @@ def print_summary(cohorts: dict[str, list[tuple[str, float]]], width: int) -> No
                f"average of its last {RECENT_MONTHS} months) and its median "
                "monthly pace. Cleared is how many of the cohort's own "
                "applicants were processed last month (the gap to the next "
-               "cohort, so rounded to the nearest 100; n/a without it). A "
-               "cohort with one month of data has no pace yet.", width))
+               "cohort, so rounded to the nearest 100; n/a without it). Best "
+               "guess averages the two paces' times to 50% and to 100%, as a "
+               "range. A cohort with one month of data has no pace yet.", width))
     print()
 
     cells, w = summary_layout(rows)

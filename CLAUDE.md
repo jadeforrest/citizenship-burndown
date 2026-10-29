@@ -59,7 +59,9 @@ in its latest month (`own_last_month`: the drop in `own_cohort`'s
 still-waiting count, `n/a` unless the next cohort has that month and the one
 before); then the Recent (`recent_pace`, last `RECENT_MONTHS`) and Median paces
 with the months to 50% and 100% cleared — the same figures as those rows of
-the full report. A cohort with only one month (normally the newest) shows its
+the full report — and a "best guess" (`best_guess`): the recent and median
+times to 50% averaged, and likewise to 100%, shown as a range like
+`13.6-27.1m` (`never` if either pace never clears). A cohort with only one month (normally the newest) shows its
 people ahead with every pace cell `n/a`. Units live in the headings (`pace/mo`,
 months) so the table fits 80 columns; below its width it stacks into a block per cohort. Cells go
 through `fmt_count` / `fmt_months_short`, which never exceed `SUMMARY_CELL`
