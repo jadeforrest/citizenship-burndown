@@ -77,6 +77,24 @@ def save_state(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state, indent=2) + "\n")
 
 
+REPORT_ERROR = "/Users/jade/Developer/error-reporting/bin/report-error"
+
+
+def report_failure(reason: str) -> None:
+    """Record a failed --once run in ~/Developer/error-reporting (which also
+    notifies, throttled). Silently skipped where that CLI isn't installed."""
+    try:
+        subprocess.run(
+            [REPORT_ERROR, "report", "--job", "flpt-watch", "--reason", reason,
+             "--script", str(Path(__file__).resolve()),
+             "--log", str(Path(__file__).resolve().parent / "flpt_watch.launchd.log")],
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def beep() -> None:
     """Play a single audible beep (macOS); fall back to the terminal bell."""
     try:
@@ -294,6 +312,7 @@ def main() -> None:
             check_once(state)
         except Exception as e:
             print(f"Error checking feed: {e}", file=sys.stderr)
+            report_failure(f"check failed: {type(e).__name__}: {e}")
             sys.exit(1)
         return
 

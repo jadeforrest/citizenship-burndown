@@ -325,6 +325,7 @@ class Main(unittest.TestCase):
         with unittest.mock.patch.object(w.sys, "argv", ["flpt_watch.py", "--once"]), \
                 unittest.mock.patch.object(w, "load_state", return_value={"k": 1}), \
                 unittest.mock.patch.object(w, "check_once", side_effect=check_once) as co, \
+                unittest.mock.patch.object(w, "report_failure") as self.reported, \
                 contextlib.redirect_stderr(io.StringIO()) as err:
             try:
                 w.main()
@@ -335,10 +336,24 @@ class Main(unittest.TestCase):
 
     def test_once_succeeds_quietly(self):
         self.assertEqual(self._main(lambda state: state), (None, ""))
+        self.reported.assert_not_called()
 
     def test_once_failure_exits_1_and_logs(self):
         self.assertEqual(self._main(RuntimeError("curl failed")),
                          (1, "Error checking feed: curl failed\n"))
+        self.reported.assert_called_once_with("check failed: RuntimeError: curl failed")
+
+    def test_report_failure_calls_error_reporting(self):
+        with unittest.mock.patch.object(w.subprocess, "run") as run:
+            w.report_failure("boom")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:6], [w.REPORT_ERROR, "report", "--job", "flpt-watch", "--reason", "boom"])
+        self.assertTrue(argv[argv.index("--log") + 1].endswith("flpt_watch.launchd.log"))
+
+    def test_report_failure_never_raises(self):
+        for error in (FileNotFoundError(), w.subprocess.TimeoutExpired("x", 30)):
+            with unittest.mock.patch.object(w.subprocess, "run", side_effect=error):
+                w.report_failure("boom")
 
 
 class FuzzSnapshots(unittest.TestCase):
