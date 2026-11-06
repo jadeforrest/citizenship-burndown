@@ -78,16 +78,45 @@ def save_state(state: dict) -> None:
 
 
 REPORT_ERROR = "/Users/jade/Developer/error-reporting/bin/report-error"
+FAILURES_PATH = Path(__file__).with_name("flpt_failures")
+# Hourly, so one failure is usually a wake-from-sleep or network blip: record
+# every failure, but only notify once this many runs in a row have failed.
+NOTIFY_AFTER_FAILURES = 2
 
 
-def report_failure(reason: str) -> None:
-    """Record a failed --once run in ~/Developer/error-reporting (which also
-    notifies, throttled). Silently skipped where that CLI isn't installed."""
+def count_failure() -> int:
+    """Increment and return the consecutive --once failure count."""
+    try:
+        n = int(FAILURES_PATH.read_text().strip()) + 1
+    except (OSError, ValueError):
+        n = 1
+    try:
+        FAILURES_PATH.write_text(f"{n}\n")
+    except OSError:
+        pass
+    return n
+
+
+def clear_failures() -> None:
+    try:
+        FAILURES_PATH.unlink()
+    except OSError:
+        pass
+
+
+def report_failure(reason: str, notify: bool = True) -> None:
+    """Record a failed --once run in ~/Developer/error-reporting as a warning
+    (notified, throttled, only when `notify`). Silently skipped where that CLI
+    isn't installed."""
+    here = Path(__file__).resolve()
+    argv = [REPORT_ERROR, "report", "--job=flpt-watch", "--severity=warning",
+            f"--reason={reason}", f"--script={here}",
+            f"--log={here.parent / 'flpt_watch.launchd.log'}"]
+    if not notify:
+        argv.append("--no-notify")
     try:
         subprocess.run(
-            [REPORT_ERROR, "report", "--job", "flpt-watch", "--reason", reason,
-             "--script", str(Path(__file__).resolve()),
-             "--log", str(Path(__file__).resolve().parent / "flpt_watch.launchd.log")],
+            argv,
             check=False,
             timeout=30,
         )
@@ -312,8 +341,11 @@ def main() -> None:
             check_once(state)
         except Exception as e:
             print(f"Error checking feed: {e}", file=sys.stderr)
-            report_failure(f"check failed: {type(e).__name__}: {e}")
+            failures = count_failure()
+            report_failure(f"check failed: {type(e).__name__}: {e}",
+                           notify=failures >= NOTIFY_AFTER_FAILURES)
             sys.exit(1)
+        clear_failures()
         return
 
     print(f"Watching {URL}")

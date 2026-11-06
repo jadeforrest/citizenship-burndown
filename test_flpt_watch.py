@@ -319,6 +319,13 @@ class Notifications(unittest.TestCase):
 class Main(unittest.TestCase):
     """--once is what launchd runs: its exit status is the only failure signal."""
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.failures = Path(self.tmp.name) / "flpt_failures"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
     def _main(self, check_once) -> tuple[int | None, str]:
         """Run `flpt_watch.py --once`; return its exit code (None if it returned) and stderr."""
         code = None
@@ -326,6 +333,7 @@ class Main(unittest.TestCase):
                 unittest.mock.patch.object(w, "load_state", return_value={"k": 1}), \
                 unittest.mock.patch.object(w, "check_once", side_effect=check_once) as co, \
                 unittest.mock.patch.object(w, "report_failure") as self.reported, \
+                unittest.mock.patch.object(w, "FAILURES_PATH", self.failures), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
             try:
                 w.main()
@@ -341,14 +349,34 @@ class Main(unittest.TestCase):
     def test_once_failure_exits_1_and_logs(self):
         self.assertEqual(self._main(RuntimeError("curl failed")),
                          (1, "Error checking feed: curl failed\n"))
-        self.reported.assert_called_once_with("check failed: RuntimeError: curl failed")
+        self.reported.assert_called_once_with("check failed: RuntimeError: curl failed", notify=False)
+
+    def test_notifies_only_from_the_second_consecutive_failure(self):
+        self._main(RuntimeError("a"))
+        self._main(RuntimeError("b"))
+        self.assertEqual(self.reported.call_args.kwargs, {"notify": True})
+        self.assertEqual(self.failures.read_text().strip(), "2")
+        self._main(lambda state: state)  # success resets the streak
+        self.assertFalse(self.failures.exists())
+        self._main(RuntimeError("c"))
+        self.assertEqual(self.reported.call_args.kwargs, {"notify": False})
+
+    def test_corrupt_failure_count_restarts_at_one(self):
+        self.failures.write_text("junk")
+        self._main(RuntimeError("a"))
+        self.assertEqual(self.failures.read_text().strip(), "1")
 
     def test_report_failure_calls_error_reporting(self):
         with unittest.mock.patch.object(w.subprocess, "run") as run:
             w.report_failure("boom")
         argv = run.call_args.args[0]
-        self.assertEqual(argv[:6], [w.REPORT_ERROR, "report", "--job", "flpt-watch", "--reason", "boom"])
-        self.assertTrue(argv[argv.index("--log") + 1].endswith("flpt_watch.launchd.log"))
+        self.assertEqual(argv[:5], [w.REPORT_ERROR, "report", "--job=flpt-watch",
+                                    "--severity=warning", "--reason=boom"])
+        self.assertTrue(any(a.startswith("--log=") and a.endswith("flpt_watch.launchd.log") for a in argv))
+        self.assertNotIn("--no-notify", argv)
+        with unittest.mock.patch.object(w.subprocess, "run") as run:
+            w.report_failure("boom", notify=False)
+        self.assertEqual(run.call_args.args[0][-1], "--no-notify")
 
     def test_report_failure_never_raises(self):
         for error in (FileNotFoundError(), w.subprocess.TimeoutExpired("x", 30)):
