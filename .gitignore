@@ -3,3 +3,4 @@ flpt_failures
 *~
 __pycache__/
 flpt_watch.launchd.log
+.coverage
