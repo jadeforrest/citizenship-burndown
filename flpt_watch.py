@@ -21,6 +21,7 @@ Usage:
 import argparse
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
@@ -77,7 +78,8 @@ def save_state(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state, indent=2) + "\n")
 
 
-REPORT_ERROR = "/Users/jade/Developer/error-reporting/bin/report-error"
+# Installed by error-reporting/install.sh.
+REPORT_ERROR = os.path.expanduser("~/.local/bin/report-error")
 FAILURES_PATH = Path(__file__).with_name("flpt_failures")
 # Hourly, so one failure is usually a wake-from-sleep or network blip: record
 # every failure, but only notify once this many runs in a row have failed.
@@ -105,7 +107,7 @@ def clear_failures() -> None:
 
 
 def report_failure(reason: str, notify: bool = True) -> None:
-    """Record a failed --once run in ~/Developer/error-reporting as a warning
+    """Record a failed --once run in error-reporting as a warning
     (notified, throttled, only when `notify`). Silently skipped where that CLI
     isn't installed."""
     here = Path(__file__).resolve()
