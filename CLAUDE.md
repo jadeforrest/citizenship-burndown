@@ -155,12 +155,12 @@ and skips rows it can't read (a period or cohort that isn't a month, a count
 that isn't a finite number >= 0), listing their line numbers above the menu.
 
 The watcher runs hourly under launchd as `com.jade.flpt-watch`
-([com.jade.flpt-watch.plist](com.jade.flpt-watch.plist), copied to
+(the plist is in Jade's private `ops` repo, `ops/launchd/`, symlinked into
 `~/Library/LaunchAgents/`), logging to the gitignored
 `flpt_watch.launchd.log`. After editing the plist:
 
 ```bash
-launchctl bootout gui/$(id -u)/com.jade.flpt-watch; cp com.jade.flpt-watch.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jade.flpt-watch.plist
+launchctl bootout gui/$(id -u)/com.jade.flpt-watch; ~/Developer/ops/install-all.sh
 ```
 
 ## Code structure
