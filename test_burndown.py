@@ -1352,25 +1352,28 @@ When will 2025-07 be processed?
   that. The 50% is about when the sweep finishes with your cohort.
 
 How the model works:
-- A trickle clears 0.9% of every cohort a month, old or new (pooled over the
-  last 3 months from the cohorts the sweep hasn't reached).
-- An oldest-first sweep clears files at the row's pace beyond the trickle,
-  working through each cohort until 50% of those waiting when it arrived are
-  left. For the cohort it's in now, that's 50% of its count the month before
-  the sweep left the cohort ahead (2025-05: its largest count since 2026-03,
-  after the C-3 change). A cohort counts as passed after 2 months with nothing
-  left to take.
+- A trickle clears 0.9% of every cohort a month, old or new: the pooled rate
+  over the last 3 months of the cohorts the sweep hasn't reached.
+- An oldest-first sweep clears files at the row's pace on top of the trickle.
+  It works through one cohort at a time until 50% of those waiting when it got
+  there are left, then moves on. Within a cohort, who it takes is random.
+- For the cohort it's in now, that 50% is of its count the month before the
+  cohort ahead got down to its leftovers (2025-05, the first cohort counted:
+  of its largest count since 2026-03, after the C-3 change). A cohort counts
+  as passed after 2 months in a row with nothing left for the sweep to take.
 - The trickle thins the files ahead too, so the sweep arrives sooner than its
   pace alone suggests.
 - Leftovers clear at 3.3% a month (pooled over the last 4 months: everyone
-  before 2025-05, plus any cohort the sweep had passed): half are still
-  waiting after 21 months. Once the sweep has passed you, this rate, not your
-  place in the queue, sets the longer times.
-- The backtest checks only a few months ahead, which the sweep reaches for few
-  cohorts, so arrival times and everything after them are extrapolation.
+  before 2025-05, plus any cohort the sweep had passed when the window
+  opened): half are still waiting after 21 months. So once the sweep has
+  passed you, this rate, not your place in the queue, sets how long you wait.
+- The backtest only checks 1-6 months ahead, and the sweep reaches few cohorts
+  that soon, so arrival times and everything after them are extrapolation.
 
 For 2025-07: of the 9,300 ahead, 1,350 are still to be swept, then the sweep
-clears 1,100 of its 2,200. 'No sweep' means the current lull continues.
+takes 1,100 of its 2,200 (fewer by then, as the trickle thins both). The rows:
+no sweep is the trickle alone, recent the latest 3-month pace, best the
+fastest 3-month pace so far.
 
                       pace/mo  arrives  50%   75%   90%
   no sweep                  -        -  78m  156m  259m
@@ -1612,88 +1615,112 @@ class FifoSummary(unittest.TestCase):
 WHEN EACH COHORT IS PROCESSED
 ============================================================
 For each cohort from 2025-05, in 2026-10:
-- Ahead: people ahead of it. To sweep: how many of them the sweep still has to
-  clear. Waiting: its own applicants still waiting.
-- Leftover: the share of those waiting that the sweep will leave behind, for
-  the cohort it's in and those it has passed (behind it, it's 50% by
-  assumption). If you're still waiting there, it's roughly your chance of
-  being one of them.
-- % fifo: how oldest-first clearing was for it over the last 3 months. 0% is
-  random, 100% means every file cleared was ahead of it. For the newest
-  cohorts it's mostly rounding.
+- Ahead: people ahead of the cohort. To sweep: how many of them the sweep
+  still has to clear before it reaches the cohort. Waiting: the cohort's own
+  applicants still waiting.
+- Leftover: the share of those waiting that the sweep will leave behind,
+  roughly your chance of being one of them. Shown for the cohort the sweep is
+  in and those it has passed; behind the sweep it's 50% by assumption.
+- % fifo: how close to oldest-first clearing has been for the cohort over the
+  last 3 months, against the settled cohorts newer than it. 0% is random
+  order, 100% means every file cleared (other than its own) was ahead of it,
+  below 0% the newer files went first. The newest cohorts have few files to
+  compare, so theirs is mostly rounding.
 - Arrives: months until the sweep reaches the cohort ('now' if it's working
   through it, 'passed' if it has finished with it).
-- 50% and 90%: months until your chance of having been processed reaches that.
-  The 50% is about when the sweep finishes with your cohort.
-- Each estimate is the latest 3-month window's; in brackets, the lowest and
-  highest over the windows ending in the last 4 months. Rounding the counts to
-  100 moves them about that much on its own.
+- Sweep ends: months until the sweep finishes with the cohort. Done by then:
+  your chance of having been processed by that point, by the trickle or the
+  sweep.
+- If left, half by: if you haven't been processed by then, you're a leftover,
+  and this is the months until half of the leftovers have been processed.
+- All times are months from 2026-10. Each is the latest 3-month window's; in
+  brackets, the lowest and highest over the windows ending in each of the last
+  4 months (leaving out any that couldn't measure the rates). Rounding the
+  published counts to 100 moves them about that much on its own.
 
 How the model works:
-- A trickle clears 0.9% of every cohort a month, old or new (pooled over the
-  last 3 months from the cohorts the sweep hasn't reached).
-- An oldest-first sweep clears 19 files a month (last 3 months) beyond the
-  trickle, working through each cohort until 50% of those waiting when it
-  arrived are left. For the cohort it's in now, that's 50% of its count the
-  month before the sweep left the cohort ahead (2025-05: its largest count
-  since 2026-03, after the C-3 change). A cohort counts as passed after 2
-  months with nothing left to take.
+- A trickle clears 0.9% of every cohort a month, old or new: the pooled rate
+  over the last 3 months of the cohorts the sweep hasn't reached.
+- An oldest-first sweep clears 19 files a month (last 3 months) on top of the
+  trickle. It works through one cohort at a time until 50% of those waiting
+  when it got there are left, then moves on. Within a cohort, who it takes is
+  random.
+- For the cohort it's in now, that 50% is of its count the month before the
+  cohort ahead got down to its leftovers (2025-05, the first cohort counted:
+  of its largest count since 2026-03, after the C-3 change). A cohort counts
+  as passed after 2 months in a row with nothing left for the sweep to take.
 - The trickle thins the files ahead too, so the sweep arrives sooner than its
   pace alone suggests.
 - Leftovers clear at 3.3% a month (pooled over the last 4 months: everyone
-  before 2025-05, plus any cohort the sweep had passed): half are still
-  waiting after 21 months. Once the sweep has passed you, this rate, not your
-  place in the queue, sets the longer times.
+  before 2025-05, plus any cohort the sweep had passed when the window
+  opened): half are still waiting after 21 months. So once the sweep has
+  passed you, this rate, not your place in the queue, sets how long you wait.
 - Cohorts newer than 2025-07 are left out because of the bulge: a new cohort's
   count swings up, sometimes many times over, then falls back over its first
   few months. A cohort is used once it has held steady for 3 months (no rise
   beyond rounding, no fall over 15%).
-- The backtest checks only a few months ahead, which the sweep reaches for few
-  cohorts, so arrival times and everything after them are extrapolation.
+- The backtest only checks 1-6 months ahead, and the sweep reaches few cohorts
+  that soon, so arrival times and everything after them are extrapolation.
 
-                                                              latest 3 mo (range of last 4)
-  cohort   ahead  to sweep  waiting  leftover  % fifo        arrives           50%             90%
-  2025-05  6,300         0    1,500       60%     64%            now  28m (14-28m)    76m (76-79m)
-  2025-06  7,800       600    1,500              100%   27m (13-27m)  44m (22-44m)    91m (75-91m)
-  2025-07  9,300     1,350    2,200               n/a   54m (27-54m)  63m (32-63m)  114m (80-114m)
+  cohort   ahead  to sweep  waiting  leftover  % fifo
+  2025-05  6,300         0    1,500       60%     64%
+  2025-06  7,800       600    1,500              100%
+  2025-07  9,300     1,350    2,200               n/a
+
+Estimates:
+  cohort        arrives    sweep ends  done by then  if left, half by
+  2025-05           now  31m (15-31m)           54%      52m (44-52m)
+  2025-06  27m (13-27m)  58m (28-58m)  70% (69-70%)      79m (57-79m)
+  2025-07  54m (27-54m)  90m (44-90m)  77% (76-77%)    110m (73-110m)
 """ + "=" * WIDE + "\n\n")
 
     def test_matches_the_fifo_report(self):
-        # The same model and inputs: each cohort's newest figures are the
-        # --fifo recent row's arrival, 50% and 90%.
+        # The same model and inputs: each cohort's newest arrival is the
+        # --fifo recent row's.
         summary = run_fifo_summary(FIFO_COHORTS)
         for target in ("2025-05", "2025-06", "2025-07"):
             fifo = run_fifo(FIFO_COHORTS, WIDE, target)
             line = next(ln for ln in fifo.splitlines()
                         if ln.startswith("  sweep, recent 3 mo "))
-            arrive, half, _, most = line.split()[-4:]
-            self.assertRegex(summary, f"\n  {target} .* {arrive}( \\(.*\\))?  +"
-                                      f"{half}( \\(.*\\))?  +{most}( \\(.*\\))?\n")
+            arrive = line.split()[-4]
+            self.assertRegex(summary, f"\n  {target} +{arrive}( \\(.*\\))?  ")
 
     def test_stacked_text(self):
-        # The narrowest width at which the cells still fit side by side.
+        # Too narrow for either table: a sentence per cohort, then a line
+        # per estimate.
         out = run_fifo_summary(FIFO_COHORTS, 46)
-        self.assertEqual(out[out.index("     arrives"):], """\
-     arrives  now
-          50%  28m (14-28m)
-          90%  76m (76-79m)
+        self.assertEqual(out[out.index("  2025-05  6,300 ahead"):], """\
+  2025-05  6,300 ahead (0 to sweep), 1,500
+    waiting, 60% leftover, 64% fifo
   2025-06  7,800 ahead (600 to sweep), 1,500
     waiting, 100% fifo
-    latest 3 mo (range of last 4)
-      arrives  27m (13-27m)
-          50%  44m (22-44m)
-          90%  91m (75-91m)
   2025-07  9,300 ahead (1,350 to sweep), 2,200
     waiting, n/a fifo
-    latest 3 mo (range of last 4)
-      arrives  54m (27-54m)
-          50%  63m (32-63m)
-          90%  114m (80-114m)
+
+Estimates:
+  2025-05
+             arrives  now
+          sweep ends  31m (15-31m)
+        done by then  54%
+    if left, half by  52m (44-52m)
+  2025-06
+             arrives  27m (13-27m)
+          sweep ends  58m (28-58m)
+        done by then  70% (69-70%)
+    if left, half by  79m (57-79m)
+  2025-07
+             arrives  54m (27-54m)
+          sweep ends  90m (44-90m)
+        done by then  77% (76-77%)
+    if left, half by  110m (73-110m)
 """ + "=" * 46 + "\n\n")
 
-    def test_table_down_to_exactly_its_width(self):
-        self.assertIn("  cohort   ahead", run_fifo_summary(FIFO_COHORTS, 98))
-        self.assertNotIn("  cohort   ahead", run_fifo_summary(FIFO_COHORTS, 97))
+    def test_tables_down_to_exactly_their_width(self):
+        counts, estimates = "  cohort   ahead", "  cohort        arrives"
+        self.assertIn(counts, run_fifo_summary(FIFO_COHORTS, 53))
+        self.assertNotIn(counts, run_fifo_summary(FIFO_COHORTS, 52))
+        self.assertIn(estimates, run_fifo_summary(FIFO_COHORTS, 69))
+        self.assertNotIn(estimates, run_fifo_summary(FIFO_COHORTS, 68))
 
     def test_fits_and_strips_cleanly_at_every_width(self):
         for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
@@ -1709,7 +1736,7 @@ How the model works:
         with unittest.mock.patch.object(b, "COLOR", True):
             out = run_fifo_summary(FIFO_COHORTS, WIDE, "2025-06")
             never = run_fifo_summary(FLAT_COHORTS)
-        self.assertIn("\033[1m  2025-06  7,800", out)
+        self.assertIn("\033[1m  2025-06\033[0m  \033[1m7,800\033[0m", out)
         self.assertNotIn("\033[1m  2025-07", out)
         self.assertRegex(never, "\033\\[31m *never")
 
@@ -1734,34 +1761,44 @@ after its bulge yet.
         self.assertIn("No settled cohort has figures for 2026-10.\n=",
                       run_fifo_summary(none))
 
-    def test_stacked_breaks_wide_rows(self):
-        row = b.FifoSummaryRow("2025-07", "9,300", "1,890", "2,200", "31%", "76%",
-                               [("recent 3 mo", ["1,199 (1,198-never)",
-                                                 "1,200 (1,199-never)", "never"])])
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            b.print_fifo_summary_stacked([row], [19, 19, 7], 60)
-            b.print_fifo_summary_stacked([row], [19, 19, 7], 40)
-        # Side by side while the cells fit, then one per line.
-        self.assertEqual(buf.getvalue(), """\
-                  arrives                  50%      90%
-  2025-07  9,300 ahead (1,890 to sweep), 2,200 waiting, 31%
-    leftover, 76% fifo
-    recent 3 mo
-      1,199 (1,198-never)  1,200 (1,199-never)    never
-  2025-07  9,300 ahead (1,890 to sweep),
-    2,200 waiting, 31% leftover, 76%
-    fifo
-    recent 3 mo
-      arrives  1,199 (1,198-never)
-          50%  1,200 (1,199-never)
-          90%  never
-""")
+    def test_sweep_split(self):
+        inf = float("inf")
+        # Swept from now: half of 1,000 at 100 a month is 5 months, 50% by
+        # then; the leftovers then halve in ln 0.5 / ln 0.9 months.
+        pos = b.Position(0, 1000, 500)
+        split = b.sweep_split(0.0, pos, 100.0, 0.1)
+        self.assertEqual(split[:2], (5.0, 0.5))
+        self.assertAlmostEqual(split.half, 5 + math.log(0.5) / math.log(0.9))
+        # Passed: it ends now, with no chance yet; leftovers from now.
+        passed = b.sweep_split(0.0, b.Position(0, 500, 0), 100.0, 0.1)
+        self.assertEqual(passed[:2], (0.0, 0.0))
+        self.assertAlmostEqual(passed.half, math.log(0.5) / math.log(0.9))
+        # No sweep never ends; nothing clearing leftovers never halves them;
+        # leftovers all clearing at once halve as the sweep ends.
+        self.assertEqual(b.sweep_split(0.01, pos, 0.0), (inf, 0.0, inf))
+        self.assertEqual(b.sweep_split(0.0, b.Position(0, 0, 0), 100.0, 0.1)[0], 0.0)
+        self.assertEqual(b.sweep_split(0.0, b.Position(100, 0, 0), 100.0),
+                         (inf, 0.0, inf))
+        self.assertEqual(b.sweep_split(0.0, pos, 100.0).half, inf)
+        self.assertEqual(b.sweep_split(0.0, pos, 100.0, 1.0).half, 5.0)
 
-    def test_group_name_fits_over_its_cells(self):
-        name = len(b.FIFO_SUMMARY_PACES[0])
-        self.assertEqual(b.under_group([5, 5, 5]), [name - 14, 5, 5])
-        self.assertEqual(b.under_group([name, 5, 5]), [name, 5, 5])
+    def test_split_cells(self):
+        pos, gone = b.Position(0, 1000, 500), b.Position(0, 500, 0)
+        fast, slow = b.Rates(0.0, 0.1, 100.0), b.Rates(0.0, 0.05, 50.0)
+        self.assertEqual(b.split_cells([fast, slow], pos),
+                         ["now", "5m (5-10m)", "50%", "12m (12-24m)"])
+        self.assertEqual(b.split_cells([fast, slow], gone),
+                         ["passed", "-", "-", "7m (7-14m)"])
+        self.assertEqual(b.split_cells([fast], gone, False)[:3], ["now", "<1m", "0%"])
+        self.assertEqual(b.split_cells([b.Rates(0.0, 0.1, None)], pos),
+                         ["-", "-", "-", "-"])
+        self.assertEqual(b.split_cells([b.Rates(0.0, 0.1, 0.0)], b.Position(9, 1, 1)),
+                         ["never", "never", "-", "-"])
+        behind = b.Position(1400, 1000, 500)
+        self.assertEqual(b.split_cells([fast, slow], behind)[0], b.band_cell(
+            [b.arrival_months(r, behind) for r in (fast, slow)]))
+        self.assertEqual(b.band_text([0.61, 0.55, 0.7], b.fmt_share), "61% (55-70%)")
+        self.assertEqual(b.fmt_share(0.614, ""), "61")
 
     def test_band_cells(self):
         inf = float("inf")
@@ -1769,23 +1806,11 @@ after its bulge yet.
         self.assertEqual(b.band_cell([5.0, 5.2]), "5m")
         self.assertEqual(b.band_cell([inf, 30.0]), "never (30-never)")
         self.assertEqual(b.band_cell([0.3]), "<1m")
-        behind, now = b.Position(1400, 1000, 500), b.Position(0, 1000, 500)
+        behind = b.Position(1400, 1000, 500)
         fast, slow = b.Rates(0.01, 0.04, 200.0), b.Rates(0.01, 0.02, 100.0)
         self.assertEqual(b.arrival_months(fast, behind), b.arrival(0.01, behind, 200))
         self.assertEqual(b.arrival_months(b.Rates(0.01, 0.04, None), behind), inf)
         self.assertEqual(b.arrival_months(b.Rates(0.01, 0.04, -5.0), behind), inf)
-        cells = b.summary_cells([fast, slow], behind)
-        self.assertEqual(cells[0], b.band_cell([b.arrival_months(fast, behind),
-                                                b.arrival_months(slow, behind)]))
-        self.assertEqual(cells[2], b.band_cell(
-            [b.months_to_chance(0.9, r.background, behind, r.pace, r.leftover)
-             for r in (fast, slow)]))
-        self.assertIn("(", cells[0])
-        # A word for the newest window stands alone.
-        self.assertEqual(b.summary_cells([fast, slow], now)[0], "now")
-        self.assertEqual(b.summary_cells([b.Rates(0.01, 0.01, None)], behind),
-                         ["-", b.band_cell([b.months_to_chance(0.5, 0.01, behind, 0)]),
-                          b.band_cell([b.months_to_chance(0.9, 0.01, behind, 0)])])
 
     def test_estimate_items(self):
         self.assertTrue(b.estimate_items((0.5, 0.75, 0.9))[1].startswith(
@@ -1820,8 +1845,7 @@ after its bulge yet.
         rows = b.fifo_summary_rows(FLAT_COHORTS, names, "2026-10",
                                    b.recent_rates(FLAT_COHORTS, names, "2026-10"))
         self.assertEqual([r.fifo for r in rows], ["n/a"] * 3)
-        self.assertEqual(rows[1].paces, [(b.FIFO_SUMMARY_PACES[0],
-                                          ["never", "never", "never"])])
+        self.assertEqual(rows[1].split, ("never", "never", "-", "-"))
         # Leftover shows only where the sweep is in or past the cohort.
         self.assertEqual([r.leftover for r in rows], ["50%", "", ""])
 
@@ -2191,6 +2215,26 @@ class FuzzFifo(unittest.TestCase):
                 # Leftovers clearing faster can only help.
                 for m, c in zip(months, chances):
                     self.assertGreaterEqual(c + 1e-12, b.sweep_chance(m, *args[:3]))
+
+    def test_split_is_the_chance_at_the_sweeps_end(self):
+        # The split is read off sweep_chance(): the chance at the sweep's end,
+        # and half of the rest cleared by `half`.
+        rng = random.Random(20261122)
+        for i in range(self.CASES):
+            waiting = rng.uniform(1, 5000)
+            args = (rng.choice([0.0, rng.uniform(0.001, 0.1)]),
+                    b.Position(rng.choice([0.0, rng.uniform(0, 20000)]), waiting,
+                               rng.uniform(0, waiting)),
+                    rng.uniform(1, 2000), rng.choice([None, rng.uniform(0, 0.2)]))
+            with self.subTest(case=i, args=args):
+                split = b.sweep_split(*args)
+                self.assertGreaterEqual(split.ends, 0)
+                self.assertTrue(0 <= split.done <= 1)
+                self.assertAlmostEqual(split.done, b.sweep_chance(split.ends, *args))
+                if math.isfinite(split.half):
+                    self.assertGreaterEqual(split.half, split.ends)
+                    self.assertAlmostEqual(b.sweep_chance(split.half, *args),
+                                           1 - (1 - split.done) / 2, places=9)
 
     def test_band_brackets_the_newest_figure(self):
         rng = random.Random(20261121)

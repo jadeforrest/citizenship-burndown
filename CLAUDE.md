@@ -170,34 +170,45 @@ at. `sweep_left` and `position` take a `share` argument so the backtest can
 try others.
 
 `python3 burndown.py --summarize` skips the prompt and runs
-`print_fifo_summary`: the `--fifo` estimates for every settled cohort, one row
-each, with people ahead, "to sweep" (`Position.work`), its own still waiting,
-"leftover" (`leftover_percent`: 1 − take / waiting, roughly the chance a
-still-waiting applicant is a leftover — shown only for the cohort the sweep is
-in and those it has passed, since behind it it's `STRAGGLERS` by
-construction), "% fifo" (its `OrderScore` over `RECENT_MONTHS` against the
-newer settled cohorts, `fifo_percent`, clamped to ±999%; for the newest
-cohorts it's mostly rounding), and `summary_cells`: arrives, then whole months
-to each `SUMMARY_ODDS` (50%, 90%), each a `band_cell` like `17m (17-43m)` — the
-newest window's figure, then the lowest and highest over the windows ending in
-the last `BAND_WINDOWS` (4) periods (`recent_rates`). When the newest
-window measured the leftover rate, windows that couldn't (it fell back to the
-trickle) are left out: they made every swept cohort's 90% the same 92 months,
-the fallback rather than the rates' spread. The pace swung 92-213 a
-month over those windows, about what rounding the counts to 100 does on its
-own. Only the recent pace is used because it backtested closest: from 2026-05
-and 2026-08 cutoffs, median paces (which still hold the fast early-2026
-months) over-predicted clearance badly. `--summarize --fifo COHORT` just bolds
-COHORT's row. The table is about 100 columns on today's data (`under_group`
-widens the first cell to span the group's name); narrower, it stacks a block
-per cohort, and when even the cells don't fit side by side
-(`print_fifo_summary_listed`) each goes on its own line after its heading. In
-`--fifo`'s estimate rows, too narrow a terminal puts each label and its pace
-on a line above the cells. The explanations are `bullets` lists:
-`estimate_items`, `sweep_items` (with `leftover_prose`), `unsettled_note` and
-`BACKTEST_NOTE` are shared with `--fifo`, so a wording change there shows up
-in both. (The older random-order `--summarize` table, with 50%/100% times and
-a best guess, was removed on 2026-11-20, and the 25-75% range cell with it.)
+`print_fifo_summary`: the column notes (`summary_items`) and model notes
+(`sweep_items`) as bullet lists, then two tables, one row per settled cohort.
+
+- The counts (`print_counts`, `COUNT_FIELDS`): people ahead, "to sweep"
+  (`Position.work`), its own still waiting, "leftover" (`leftover_percent`:
+  1 − take / waiting, roughly the chance a still-waiting applicant is a
+  leftover — shown only for the cohort the sweep is in and those it has
+  passed, since behind it it's `STRAGGLERS` by construction) and "% fifo"
+  (its `OrderScore` over `RECENT_MONTHS` against the newer settled cohorts,
+  `fifo_percent`, clamped to ±999%; for the newest cohorts it's mostly
+  rounding).
+- The estimates (`print_split`, `SPLIT_HEADS`, cells from `split_cells`):
+  arrives, then `sweep_split` — when the sweep finishes with the cohort, the
+  chance you've been processed by then (by the trickle or the sweep, read off
+  `sweep_chance`), and when half of those it leaves have been processed at
+  the leftover rate. The outcome has two humps, done by the sweep's end or a
+  leftover with a long tail, so these replaced the 50%/90% columns on
+  2026-11-20 (a 50%-90% range hid that; `--fifo` still shows 50/75/90%).
+
+Each estimate is a `band_cell` like `17m (17-43m)` (`band_text`, with
+`fmt_share` for the chance): the newest window's figure, then the lowest and
+highest over the windows ending in the last `BAND_WINDOWS` (4) periods
+(`recent_rates`). When the newest window measured the leftover rate, windows
+that couldn't (it fell back to the trickle) are left out: they made every
+swept cohort's 90% the same 92 months, the fallback rather than the rates'
+spread. The pace swung 92-213 a month over those windows, about what rounding
+the counts to 100 does on its own. Only the recent pace is used because it
+backtested closest: from 2026-05 and 2026-08 cutoffs, median paces (which
+still hold the fast early-2026 months) over-predicted clearance badly.
+`--summarize --fifo COHORT` just bolds COHORT's rows. Both tables go through
+`print_columns` (about 55 and 70 columns on today's data); narrower, the
+counts become a sentence per cohort (`summary_lead_text`) and the estimates
+a heading per cohort with a line per cell. In `--fifo`'s estimate rows, too
+narrow a terminal puts each label and its pace on a line above the cells.
+The explanations are `bullets` lists: `ARRIVES_ITEM`, `sweep_items` (with
+`leftover_prose`), `unsettled_note` and `BACKTEST_NOTE` are shared with
+`--fifo`, so a wording change there shows up in both. (The older random-order
+`--summarize` table, with 50%/100% times and a best guess, was removed on
+2026-11-20, and the 25-75% range cell with it.)
 
 Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
 stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
@@ -358,8 +369,8 @@ History and prompt handling, ahead of the analysis pipeline:
 - `main(argv=())` takes its arguments explicitly (`__main__` passes
   `sys.argv[1:]`) so the tests, which run under unittest's own argv, can call
   it bare. `print_report` picks the report: `--summarize` (with or without
-  `--fifo`) goes to `print_fifo_summary`, which picks
-  `print_fifo_summary_table` or `print_fifo_summary_stacked`; `--fifo` goes to
+  `--fifo`) goes to `print_fifo_summary`, which prints
+  `print_counts` and `print_split`; `--fifo` goes to
   `print_fifo`, which prints `print_fifo_table`, `print_order` and
   `print_estimates` in turn.
 
