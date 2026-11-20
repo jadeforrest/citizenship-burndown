@@ -90,7 +90,15 @@ prints:
 - the leftover rate (`leftover_rate`): the same pooled clearance of the
   leftovers the sweep had already passed when the window opened
   (`window_groups`: the `earlier` tail once `tail_passed`, plus any
-  `passed_by` cohort). The tail counts as passed once the first settled
+  `passed_by` cohort), over the longest window from `LEFTOVER_MONTHS` (6)
+  down to `RECENT_MONTHS` that opens after they were passed
+  (`leftover_months`, kept in `Rates.leftover_months`). The tail is one
+  series of about 1,500 rounded to 100, so a 3-month window swung 2.0-4.1% on
+  a single rounding step (changed 2026-11-20; it's 3.6% over 5 months now).
+  `passed_by` needs `PASSED_MONTHS` (2) periods in a row with nothing left to
+  take, so one rounding step doesn't flip a cohort between `now` and
+  `passed` (a period without its figure doesn't count against it); the
+  `passed` label uses it too. The tail counts as passed once the first settled
   cohort is more than `BULGE_RISE` below its size, i.e. the sweep has moved
   on to it; before that (the early-2026 sweep) the tail is what it's
   sweeping;
@@ -101,7 +109,7 @@ prints:
   `sweep_chance`: the trickle compounding, an oldest-first sweep, and the
   leftovers it leaves clearing at the leftover rate. The 50% is about when
   the sweep finishes with the cohort. `fmt_months_short` rounds to whole
-  months (`<1` under one): the inputs are too rough for tenths.
+  months with an `m` (`13m`, `<1m` under one): the inputs are too rough for tenths.
 
 There is one sweep, so there is one pace for every cohort (`sweep_pace`):
 the clearance over the window of everyone it hadn't passed when the window
@@ -121,9 +129,16 @@ rows contradicted each other, 40-240 a month.)
 The sweep works from COHORT's `Position` (`position`): `work`, the files it
 still has to clear ahead of COHORT, then `take` of COHORT's own `waiting`.
 Both come from `sweep_left`. For the cohort the sweep is in now (no work
-ahead of it) that's its current count minus the `STRAGGLERS` (50%) share of
-its size, floored at 0, so leftovers already passed don't hold it up again.
-Every cohort behind it (`behind=True`) gives up all but `STRAGGLERS` of
+ahead of it) that's its current count minus its `sweep_level`, floored at 0,
+so leftovers already passed don't hold it up again. The level is
+`STRAGGLERS` (50%) of its count the period before the cohort ahead was first
+down to *its* level (`first_down_to`), i.e. of whoever was waiting when the
+sweep got there; the first settled cohort, or one reached at its first
+counted period, uses its size instead. Until 2026-11-20 every in-sweep cohort
+used its size, which disagreed with the rule behind it (the size is before
+the trickle thinned it, and a maximum of rounded counts): 2025-03's take
+would have dropped from 683 to 516 the month the sweep arrived, its 50%
+jumping from 5 to 9 months on no new data. Every cohort behind it (`behind=True`) gives up all but `STRAGGLERS` of
 whoever is still waiting when the sweep gets there, which is (1 − share) of
 its current count because the trickle thins the cohort and its take alike;
 charging the trickle's past losses to the sweep's share (the old rule) pushed
@@ -163,20 +178,24 @@ in and those it has passed, since behind it it's `STRAGGLERS` by
 construction), "% fifo" (its `OrderScore` over `RECENT_MONTHS` against the
 newer settled cohorts, `fifo_percent`, clamped to ±999%; for the newest
 cohorts it's mostly rounding), and `summary_cells`: arrives, then whole months
-to each `SUMMARY_ODDS` (50%, 90%), each a `band_cell` like `17 (17-43)` — the
+to each `SUMMARY_ODDS` (50%, 90%), each a `band_cell` like `17m (17-43m)` — the
 newest window's figure, then the lowest and highest over the windows ending in
-the last `BAND_WINDOWS` (4) periods (`recent_rates`). The pace swung 92-213 a
+the last `BAND_WINDOWS` (4) periods (`recent_rates`). When the newest
+window measured the leftover rate, windows that couldn't (it fell back to the
+trickle) are left out: they made every swept cohort's 90% the same 92 months,
+the fallback rather than the rates' spread. The pace swung 92-213 a
 month over those windows, about what rounding the counts to 100 does on its
 own. Only the recent pace is used because it backtested closest: from 2026-05
 and 2026-08 cutoffs, median paces (which still hold the fast early-2026
 months) over-predicted clearance badly. `--summarize --fifo COHORT` just bolds
-COHORT's row. The table is about 95 columns on today's data (`under_group`
+COHORT's row. The table is about 100 columns on today's data (`under_group`
 widens the first cell to span the group's name); narrower, it stacks a block
 per cohort, and when even the cells don't fit side by side
 (`print_fifo_summary_listed`) each goes on its own line after its heading. In
 `--fifo`'s estimate rows, too narrow a terminal puts each label and its pace
-on a line above the cells. `sweep_prose`, `unsettled_note` and
-`estimate_prose` are shared with `--fifo`, so a wording change there shows up
+on a line above the cells. The explanations are `bullets` lists:
+`estimate_items`, `sweep_items` (with `leftover_prose`), `unsettled_note` and
+`BACKTEST_NOTE` are shared with `--fifo`, so a wording change there shows up
 in both. (The older random-order `--summarize` table, with 50%/100% times and
 a best guess, was removed on 2026-11-20, and the 25-75% range cell with it.)
 
