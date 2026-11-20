@@ -21,10 +21,12 @@ proof-of-citizenship processing times:
   `citizen-proofs-202x/*` cohort's people-ahead count and wait-time estimate to
   `flpt_history.csv` whenever they change, which `burndown.py` reads.
 
-There is no build step, package manifest, or linter configured in this repo.
-[test_burndown.py](test_burndown.py) and
-[test_flpt_watch.py](test_flpt_watch.py) use stdlib `unittest` only — keep
-them dependency-free.
+There is no build step or package manifest. The scripts and
+[test_burndown.py](test_burndown.py) /
+[test_flpt_watch.py](test_flpt_watch.py) use the stdlib only (`unittest`) —
+keep them dependency-free. Dev tooling is separate: [check.sh](check.sh) builds
+a gitignored `.venv` from [requirements-dev.txt](requirements-dev.txt)
+(coverage, lizard) and is the only thing that uses it.
 
 ## Running
 
@@ -83,12 +85,24 @@ keeps swinging newer cohorts' own counts by thousands). It prints:
   of COHORT versus COHORT and the newer settled cohorts, rescaled so 0 is
   random order and 1 strict oldest-first;
 - months until COHORT's chance of being processed reaches each
-  `ESTIMATE_ODDS`, from `sweep_chance`: the background rate compounding, plus
+  `ESTIMATE_ODDS` — the first two shown as one range cell (`14.7-70.6m`,
+  `5.3-never`, `never`), the last on its own, under `ESTIMATE_HEADS` —
+  from `sweep_chance`: the background rate compounding, plus
   an oldest-first sweep at the row's pace (none, recent, median, best
   `RECENT_MONTHS` window) that reaches COHORT once all but `STRAGGLERS` (30%)
   of the people ahead are gone and then drains COHORT to the same residue.
   `months_to_chance` bisects it (it only rises), `inf` past `ESTIMATE_CAP`.
   `STRAGGLERS` is a judgement from the 2026 sweep, not fitted.
+
+`--summarize --fifo [COHORT]` (either order) runs `print_fifo_summary`
+instead of either report: one row per settled cohort with people ahead, its
+own still waiting, "% fifo" (its `OrderScore` over the longest `OWN_WINDOWS`
+against itself and the newer settled cohorts, `fifo_percent`, clamped to
+±999%), and the same estimate cells as `--fifo` for the recent and median
+paces only (`FIFO_SUMMARY_PACES`). COHORT is just the bold row. The table is
+81 columns on today's data, so at 80 it stacks; at 40 a pace's cells drop to
+the line under its name. `sweep_prose`, `unsettled_note` and `ESTIMATE_PROSE`
+are shared with `--fifo`, so a wording change there shows up in both.
 
 Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
 stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
@@ -111,6 +125,22 @@ Run the tests with:
 ```bash
 python3 -m unittest test_burndown test_flpt_watch   # fast pass, ~0.2s
 ```
+
+The full fast-pass gate (tests under branch coverage, CRAP ≤ 12 for every
+function the change touches, and jscpd for clones) is:
+
+```bash
+./check.sh            # scores uncommitted changes (vs HEAD)
+./check.sh main~3     # scores everything changed since main~3
+CRAP_ALL=1 ./check.sh # lists every function's score, touched or not
+```
+
+[crap.py](crap.py) maps `git diff -U0 REF` hunks onto lizard's functions (a
+file REF doesn't have counts as wholly changed) and reads coverage from
+`coverage.json`; [test_crap.py](test_crap.py) needs lizard, so it only runs
+under `check.sh`. jscpd comes through `npx` (pinned in `check.sh`), configured
+by [.jscpd.json](.jscpd.json): `maxLines` is raised because jscpd silently
+skips files over 1,000 lines by default, which covers both big files here.
 
 The `FuzzPipeline` and `FuzzFifo` cases run 300 random inputs by default so
 the suite stays a quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):

@@ -1,0 +1,3 @@
+# Dev-only tooling for ./check.sh. The scripts and tests stay stdlib-only.
+coverage==7.17.3
+lizard==1.26.1

@@ -1,0 +1,11 @@
+{
+  "format": ["python"],
+  "pattern": "*.py",
+  "ignore": ["**/.claude/**", "**/.venv/**", "**/__pycache__/**"],
+  "minLines": 5,
+  "minTokens": 50,
+  "maxLines": 10000,
+  "maxSize": "1mb",
+  "reporters": ["console"],
+  "threshold": 0
+}
