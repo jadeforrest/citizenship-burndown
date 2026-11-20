@@ -5,8 +5,14 @@ For each cutoff period, the history is cut off there, each settled cohort's
 share of its own applicants cleared over the next 1..MAX_HORIZON months is
 predicted, and the prediction is compared with what flpt_history.csv went on
 to show. Models: the sweep at each leftover share (STRAGGLERS candidates), the
-cohort's own recent clearance rate carried forward, and random order (the
-people ahead clearing at their pace, with you among them at random).
+cohort's own recent clearance rate carried forward, random order (the people
+ahead clearing at their pace, with you among them at random), a gradient
+(each group's rate a falling function of how many are ahead of it, fitted
+on the cutoff's last window and simulated forward), and two baselines: the
+trickle alone, and nothing cleared at all.
+
+The sweep only differs from the trickle alone where it reaches the cohort
+within the horizon, so the report scores those cases again on their own.
 
     python3 backtest.py                 # every usable cutoff
     python3 backtest.py --from 2026-07  # only cutoffs from 2026-07 on
@@ -34,6 +40,8 @@ class Case(NamedTuple):
     seen: dict        # the history up to `cut`
     background: float
     pace: float       # the shared sweep pace at `cut`, never below 0
+    leftover: float = 0.0   # how fast the leftovers clear at `cut`
+    reached: bool = False   # the 50% sweep arrives within `horizon`
 
 
 def truncate(cohorts: dict[str, list[tuple[str, float]]], cut: str) -> dict:
@@ -53,8 +61,8 @@ def cases(cohorts: dict[str, list[tuple[str, float]]], start: str) -> list[Case]
         names = b.settled_cohorts(seen)
         if not names:
             continue
-        _, background = b.fifo_background(seen, names, cut)
-        pace = max(b.sweep_pace(seen, names, cut, background) or 0.0, 0.0)
+        rates = b.model_rates(seen, names, cut)
+        pace = max(rates.pace or 0.0, 0.0)
         for horizon in range(1, MAX_HORIZON + 1):
             end = b.month_label(b.month_index(cut) + horizon)
             for name in names:
@@ -62,8 +70,93 @@ def cases(cohorts: dict[str, list[tuple[str, float]]], start: str) -> list[Case]
                 later = b.own_cohort(cohorts, name).waiting.get(end)
                 if now and later is not None:
                     out.append(Case(cut, horizon, name, 1 - later / now, seen,
-                                    background, pace))
+                                    rates.background, pace, rates.leftover,
+                                    reaches(seen, name, cut, rates, horizon)))
     return out
+
+
+def reaches(seen: dict, name: str, cut: str, rates: b.Rates, horizon: int) -> bool:
+    """Whether the STRAGGLERS sweep is in or reaches `name` within `horizon`."""
+    pos = b.position(seen, name, cut)
+    return (pos is not None and pos.take > 0
+            and b.arrival_months(rates, pos) < horizon)
+
+
+def isotonic_falling(points: list[tuple[float, float, float]]) -> list[tuple[float, float]]:
+    """
+    (x, fitted y) for (x, y, weight) points, the fitted y never rising with
+    x: weighted least squares by pooling adjacent violators. Points without
+    weight are dropped.
+    """
+    blocks: list[list] = []     # [weighted y sum, weight, xs]
+    for x, y, w in sorted(p for p in points if p[2] > 0):
+        blocks.append([w * y, w, [x]])
+        while len(blocks) > 1 and (blocks[-2][0] / blocks[-2][1]
+                                   < blocks[-1][0] / blocks[-1][1]):
+            wy, w2, xs = blocks.pop()
+            blocks[-1][0] += wy
+            blocks[-1][1] += w2
+            blocks[-1][2] += xs
+    return [(x, wy / w) for wy, w, xs in blocks for x in xs]
+
+
+def interpolate(fit: list[tuple[float, float]], x: float) -> float:
+    """`fit`'s y at `x`: linear between its points, flat past either end."""
+    if x <= fit[0][0]:
+        return fit[0][1]
+    for (x0, y0), (x1, y1) in zip(fit, fit[1:]):
+        if x <= x1:
+            return y0 if x1 == x0 else y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return fit[-1][1]
+
+
+def groups(seen: dict, names: list[str]) -> list[tuple[str, dict[str, float]]]:
+    """The queue in order: the tail before `names[0]`, then each settled cohort."""
+    return [("", dict(seen[names[0]]))] + [
+        (n, b.settled_waiting(b.own_cohort(seen, n).waiting)) for n in names]
+
+
+def gradient_fit(seen: dict, names: list[str], cut: str) -> list[tuple[float, float]]:
+    """
+    Each group's compounded clearance over the RECENT_MONTHS to `cut`
+    against the middle of its place in the queue when the window opened
+    (people ahead plus half its own), weighted by its size then and made to
+    fall with the place (isotonic_falling). [] with nothing to fit.
+    """
+    first = b.month_label(b.month_index(cut) - b.RECENT_MONTHS)
+    points, ahead = [], 0.0
+    for _, series in groups(seen, names):
+        if first not in series:
+            return isotonic_falling(points)
+        rate = b.window_rate(series, cut, b.RECENT_MONTHS)
+        if rate is not None:
+            points.append((ahead + series[first] / 2, rate, series[first]))
+        ahead += series[first]
+    return isotonic_falling(points)
+
+
+def gradient_cleared(case: Case) -> float:
+    """
+    The gradient model's share of `case.cohort` cleared after `case.horizon`
+    months: every month each group clears its fitted rate at its current
+    place in the queue, so a cohort's rate rises as the queue ahead drains.
+    """
+    names = b.settled_cohorts(case.seen)
+    if not names:
+        return 0.0
+    fit = gradient_fit(case.seen, names, case.cut)
+    queue = [(n, s.get(case.cut, 0.0)) for n, s in groups(case.seen, names)]
+    start = dict(queue).get(case.cohort, 0.0)
+    if not fit or start <= 0:
+        return 0.0
+    for _ in range(case.horizon):
+        ahead, moved = 0.0, []
+        for n, count in queue:
+            rate = b.unit(interpolate(fit, ahead + count / 2))
+            moved.append((n, count * (1 - rate)))
+            ahead += count
+        queue = moved
+    return 1 - dict(queue)[case.cohort] / start
 
 
 def ahead_pace(case: Case) -> float:
@@ -78,7 +171,7 @@ def predictions(case: Case) -> dict[str, float]:
     for share in SHARES:
         pos = b.position(case.seen, case.cohort, case.cut, share)
         out[f"sweep, {share:.0%} left"] = b.sweep_chance(
-            case.horizon, case.background, pos, case.pace)
+            case.horizon, case.background, pos, case.pace, case.leftover)
     own = b.own_cohort(case.seen, case.cohort).waiting
     rate = b.window_rate(own, case.cut, b.RECENT_MONTHS)
     out[f"own rate, {b.RECENT_MONTHS} mo"] = (
@@ -86,6 +179,9 @@ def predictions(case: Case) -> dict[str, float]:
     ahead = case.seen[case.cohort][0][1]
     raw = ahead_pace(case)
     out["random order"] = min(raw * case.horizon / ahead, 1.0) if ahead > 0 else 1.0
+    out["gradient"] = gradient_cleared(case)
+    out["trickle only"] = 1 - (1 - case.background) ** case.horizon
+    out["nothing"] = 0.0
     return out
 
 
@@ -136,6 +232,10 @@ def main(argv=()) -> int:
         return 1
     print(report(score(all_cases), len(all_cases),
                  sorted({c.cut for c in all_cases})))
+    reached = [c for c in all_cases if c.reached]
+    print("\nWhere the sweep is in or reaches the cohort within the horizon:")
+    print(report(score(reached), len(reached), sorted({c.cut for c in reached}))
+          if reached else "  none.")
     return 0
 
 

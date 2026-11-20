@@ -87,17 +87,31 @@ prints:
   neither, so a cohort at the front of the sweep doesn't count against its
   own score; with nothing newer there's no score), rescaled so 0 is random
   order and 1 strict oldest-first;
+- the leftover rate (`leftover_rate`): the same pooled clearance of the
+  leftovers the sweep had already passed when the window opened
+  (`window_groups`: the `earlier` tail once `tail_passed`, plus any
+  `passed_by` cohort). The tail counts as passed once the first settled
+  cohort is more than `BULGE_RISE` below its size, i.e. the sweep has moved
+  on to it; before that (the early-2026 sweep) the tail is what it's
+  sweeping;
 - for each pace row (none, recent, best `RECENT_MONTHS` window), when the
   sweep `arrives` (`arrival_text`: months, `now`, `passed`, `never`), then
-  months until COHORT's chance of being processed reaches each
-  `ESTIMATE_ODDS` — the first two shown as one range cell (`14.7-70.6m`,
-  `5.3-never`, `never`), the last on its own, under `ESTIMATE_HEADS` — from
-  `sweep_chance`: the trickle compounding, plus an oldest-first sweep.
+  whole months until COHORT's chance of being processed reaches each
+  `ESTIMATE_ODDS` (50%, 75%, 90%, under `ESTIMATE_HEADS`) — from
+  `sweep_chance`: the trickle compounding, an oldest-first sweep, and the
+  leftovers it leaves clearing at the leftover rate. The 50% is about when
+  the sweep finishes with the cohort. `fmt_months_short` rounds to whole
+  months (`<1` under one): the inputs are too rough for tenths.
 
 There is one sweep, so there is one pace for every cohort (`sweep_pace`):
-everyone's clearance over the window (the `earlier` tail plus every settled
-cohort with figures at both ends) less what the trickle would have taken of
-them. `fifo_paces(cohorts, names, last, background)` gives the recent one and
+the clearance over the window of everyone it hadn't passed when the window
+opened (`window_groups`, figures at both ends), less what the trickle would
+have taken of them. The leftovers' clearance is theirs, at the leftover rate,
+not the sweep's: until 2026-11-20 the tail's clearance was counted in the pace
+*and* the leftovers were assumed to clear only at the trickle, which spent it
+twice (about 43 of 213 a month). `model_rates` bundles a window's trickle,
+leftover rate (never below the trickle) and pace as `Rates`.
+`fifo_paces(cohorts, names, last, background)` gives the recent pace and
 the best over any window ending in a month the tail has a figure for, each
 net of the trickle measured over its own window. (Until 2026-11-20 each cohort
 got its own pace from its own people-ahead drop less trickle × people ahead;
@@ -117,7 +131,7 @@ leftover % to 52-64%. `arrival` thins the work ahead by the trickle too:
 `ln(1 + work·L / pace) / L` with L the trickle's monthly log-rate, rather
 than `work / pace` (2026-02 was 80 months the old way, about 40 now), and
 `sweep_chance` takes `take / waiting` of whoever the trickle has left at
-arrival. Size (`cohort_size`) is the largest own count from `SIZE_FROM`
+arrival, then the rest (all of a cohort it has passed) clear at `leftover`. Size (`cohort_size`) is the largest own count from `SIZE_FROM`
 (2026-03) or from where the cohort's bulge settled, whichever is later
 (`None` while it's bulging or with no count from then): the C-3 change in
 December 2025 makes earlier counts jump, and this also keeps 2025-11's
@@ -126,14 +140,14 @@ December 2025 makes earlier counts jump, and this also keeps 2025-11's
 tail from 5,800 to about 1,500). `months_to_chance` bisects the chance (it
 only rises), `inf` past `ESTIMATE_CAP`.
 
-Once the sweep has passed you, only the trickle is left, so the 75% and 90%
-times are set by the trickle and the leftover share, not by your place in the
-queue: every cohort the sweep reaches in time shows the same figures. The
-prose says so, and `leftover_prose` gives the leftovers' half-life at the
-trickle and, when the `earlier` tail has lately cleared faster
-(`tail_rate`), at that rate too, since the pre-2025 leftovers have been
-clearing at 3.5-4.5% a month, 2-3x the trickle. Those long times are an
-extrapolation the backtest can't check (its horizons are 1-6 months).
+Once the sweep has passed you, only the leftover rate is left, so the 75% and
+90% times are set by it and the leftover share, not by your place in the
+queue. The pre-2025 leftovers have been clearing at 3.5-5.5% a month, 2-3x
+the trickle (`leftover_prose` gives their half-life), and 2025-01, just
+passed, faster still. Those long times are an extrapolation the backtest
+can't check: its horizons are 1-6 months, and in most of its cases the sweep
+never reaches the cohort, so the sweep predicts exactly what the trickle
+alone does.
 `STRAGGLERS` was a hand-picked 30% until [backtest.py](backtest.py) (below)
 put 20-60% within about a point of each other once the pace had settled, with
 50% marginally best and matching the 50-55% that 2024-12 and 2025-01 were left
@@ -143,22 +157,28 @@ try others.
 `python3 burndown.py --summarize` skips the prompt and runs
 `print_fifo_summary`: the `--fifo` estimates for every settled cohort, one row
 each, with people ahead, "to sweep" (`Position.work`), its own still waiting,
-"leftover %" (`leftover_percent`: 1 − take / waiting, the share the sweep
-won't take, so roughly the chance a still-waiting applicant is a leftover;
-explained in the report's first paragraph), "% fifo" (its `OrderScore` over
-`RECENT_MONTHS` against the newer settled cohorts, `fifo_percent`, clamped to
-±999%), and the estimate cells (arrives, 25-75%, 90%) at the shared recent
-pace only (`FIFO_SUMMARY_PACES`), which the prose states. The recent pace is
-the only one shown because it backtested closest: from 2026-05 and 2026-08
-cutoffs, median paces (which still hold the fast early-2026 months)
-over-predicted clearance badly. `--summarize --fifo COHORT` just bolds
-COHORT's row. The table is about 85 columns on today's data; narrower, it
-stacks a block per cohort, and at 40 a pace's cells drop under its name. In
+"leftover" (`leftover_percent`: 1 − take / waiting, roughly the chance a
+still-waiting applicant is a leftover — shown only for the cohort the sweep is
+in and those it has passed, since behind it it's `STRAGGLERS` by
+construction), "% fifo" (its `OrderScore` over `RECENT_MONTHS` against the
+newer settled cohorts, `fifo_percent`, clamped to ±999%; for the newest
+cohorts it's mostly rounding), and `summary_cells`: arrives, then whole months
+to each `SUMMARY_ODDS` (50%, 90%), each a `band_cell` like `17 (17-43)` — the
+newest window's figure, then the lowest and highest over the windows ending in
+the last `BAND_WINDOWS` (4) periods (`recent_rates`). The pace swung 92-213 a
+month over those windows, about what rounding the counts to 100 does on its
+own. Only the recent pace is used because it backtested closest: from 2026-05
+and 2026-08 cutoffs, median paces (which still hold the fast early-2026
+months) over-predicted clearance badly. `--summarize --fifo COHORT` just bolds
+COHORT's row. The table is about 95 columns on today's data (`under_group`
+widens the first cell to span the group's name); narrower, it stacks a block
+per cohort, and when even the cells don't fit side by side
+(`print_fifo_summary_listed`) each goes on its own line after its heading. In
 `--fifo`'s estimate rows, too narrow a terminal puts each label and its pace
 on a line above the cells. `sweep_prose`, `unsettled_note` and
-`ESTIMATE_PROSE` are shared with `--fifo`, so a wording change there shows up
+`estimate_prose` are shared with `--fifo`, so a wording change there shows up
 in both. (The older random-order `--summarize` table, with 50%/100% times and
-a best guess, was removed on 2026-11-20.)
+a best guess, was removed on 2026-11-20, and the 25-75% range cell with it.)
 
 Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
 stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
@@ -207,22 +227,30 @@ python3 backtest.py --from 2026-07  # only cutoffs after the early-2026 pace set
 [test_backtest.py](test_backtest.py)) cuts the history off at each period
 from `SIZE_FROM`, predicts each settled cohort's own share cleared 1-6 months
 on, and compares that with what the history went on to show. Models: the
-sweep at each of `SHARES` (one shared pace per cutoff, `Case.pace`), the
-cohort's own recent rate carried forward, and random order (the cohort's own
-people-ahead drop, `ahead_pace`). From 2026-07 on the 50% sweep's mean
-error is 3.8% (4.2% with the old per-cohort paces, a median trickle and
-unthinned arrival). On the full range every sweep model is badly over-optimistic,
-because the recent pace at the early cutoffs still held the fast early-2026
-months; from 2026-07 on they're within a few points of the actual figures.
-The pace, not the leftover share, is what moves the error. Re-run it when
-more months arrive before changing `STRAGGLERS`.
+sweep at each of `SHARES` (one shared `Rates` per cutoff, `Case.pace` and
+`Case.leftover`), the cohort's own recent rate carried forward, random order
+(the cohort's own people-ahead drop, `ahead_pace`), a gradient
+(`gradient_cleared`: each group's rate an `isotonic_falling` function of the
+middle of its place in the queue, fitted on the cutoff's last window and
+simulated forward, so a cohort speeds up as the queue ahead drains), and two
+baselines, `trickle only` and `nothing`. It then scores again only the cases
+where the 50% sweep is in or reaches the cohort within the horizon
+(`Case.reached`), since everywhere else the sweep predicts exactly what the
+trickle alone does. From 2026-07 on: 50% sweep 4.0% mean error (3.8% with the
+pre-2026-11-20 pace and leftovers, the same within noise, as the changes are
+mostly beyond the horizons), gradient 4.3% with almost no bias, trickle only
+5.1%; on the 15 reached cases 10.2%, gradient 11.6%, trickle only 19.4%. On
+the full range every sweep model is badly over-optimistic, because the recent
+pace at the early cutoffs still held the fast early-2026 months. The pace,
+not the leftover share, is what moves the error. Re-run it when more months
+arrive before changing `STRAGGLERS` or switching the report to the gradient.
 
 The `FuzzPipeline` and `FuzzFifo` cases run 300 random inputs by default so
 the suite stays a quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):
 
 ```bash
 BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown.FuzzPipeline
-BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown.FuzzFifo        # ~2s
+BURNDOWN_FUZZ_CASES=20000 python3 -m unittest test_burndown.FuzzFifo        # ~12s
 FLPT_FUZZ_CASES=5000 python3 -m unittest test_flpt_watch.FuzzSnapshots   # ~6s
 ```
 
