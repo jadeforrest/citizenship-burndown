@@ -876,11 +876,17 @@ def print_banner(title: str, width: int) -> None:
 
 
 
-# --fifo only compares cohorts at least this many months older than the latest
-# period. Late intake keeps landing in a month's cohort for most of a year (the
-# 2026 cohorts' own counts swung by tens of thousands), and a cohort still
-# growing has no clearance rate worth reading.
-FIFO_SETTLED = 12
+# The bulge: a new cohort's own count first shows about 2,000, then swings up,
+# sometimes 10-30x, and falls back before settling, within about 3-7 months so
+# far (2026-03 went 2,300 -> 68,500 -> 7,400). --fifo only reads a cohort once
+# its bulge has settled: BULGE_MONTHS steady months in a row, where a month is
+# steady if the count rose by no more than BULGE_RISE (two counts rounded to
+# the nearest 100 can differ by 200 on rounding alone) and fell by no more than
+# BULGE_DROP (the sweep's fastest months took 2025-01 down 40%, but by then it
+# had settled).
+BULGE_MONTHS = 3
+BULGE_RISE = 200
+BULGE_DROP = 0.15
 
 # Share of a cohort an oldest-first sweep leaves behind for later. When the
 # early-2026 sweep moved on, 2024-12 and 2025-01 were at 50-55% of their
@@ -896,9 +902,10 @@ STRAGGLERS = 0.5
 SIZE_FROM = "2026-03"
 
 # The chances --fifo times: months until you're this likely to have been
-# processed. The first two are shown as a range, the last on its own.
+# processed. The first two are shown as a range, the last on its own, after
+# the months until the sweep arrives.
 ESTIMATE_ODDS = (0.25, 0.75, 0.90)
-ESTIMATE_HEADS = ("25-75% time", "90% time")
+ESTIMATE_HEADS = ("arrives", "25-75% time", "90% time")
 
 # Furthest out months_to_chance() looks before calling it "never".
 ESTIMATE_CAP = 1200.0
@@ -909,19 +916,51 @@ def latest_period(cohorts: dict[str, list[tuple[str, float]]]) -> str:
     return max(series[0][0] for series in cohorts.values() if series)
 
 
+def steady(before: float, after: float) -> bool:
+    """One month's change in an own count that's within the bulge bounds."""
+    return (after - before <= BULGE_RISE
+            and after >= before * (1 - BULGE_DROP))
+
+
+def settled_from(waiting: dict[str, float]) -> str | None:
+    """
+    The first period of a cohort's first run of BULGE_MONTHS steady months
+    in a row (consecutive periods, all with figures): where its bulge had
+    settled. None if it hasn't yet. Once settled, a cohort stays settled.
+    """
+    for start in sorted(waiting):
+        months = [month_label(month_index(start) + k)
+                  for k in range(BULGE_MONTHS + 1)]
+        if all(m in waiting for m in months) and all(
+                steady(waiting[a], waiting[b]) for a, b in zip(months, months[1:])):
+            return start
+    return None
+
+
+def settled_waiting(waiting: dict[str, float]) -> dict[str, float]:
+    """A cohort's own counts from when its bulge settled; {} while it's bulging."""
+    start = settled_from(waiting)
+    if start is None:
+        return {}
+    return {p: n for p, n in waiting.items() if p >= start}
+
+
 def settled_cohorts(cohorts: dict[str, list[tuple[str, float]]],
                     start: str = SUMMARY_FROM) -> list[str]:
     """
-    Cohorts from `start` on whose own still-waiting count can be read (the
-    next cohort has figures) and that are at least FIFO_SETTLED months older
-    than the latest period.
+    The run of consecutive cohorts from the first one on or after `start`
+    whose bulge has settled (settled_from), stopping at the first that
+    hasn't: the ones --fifo reads.
     """
-    if not any(cohorts.values()):
+    present = [c for c, series in cohorts.items() if c >= start and series]
+    if not present:
         return []
-    newest = month_index(latest_period(cohorts))
-    return [c for c in cohorts
-            if c >= start and newest - month_index(c) >= FIFO_SETTLED
-            and own_cohort(cohorts, c).waiting]
+    names = []
+    index = month_index(min(present))
+    while settled_from(own_cohort(cohorts, month_label(index)).waiting):
+        names.append(month_label(index))
+        index += 1
+    return names
 
 
 def window_rate(series: dict[str, float], last: str, months: int) -> float | None:
@@ -949,21 +988,58 @@ def cohort_rates(cohorts: dict[str, list[tuple[str, float]]],
     rows = [CohortRates("earlier", tail.get(last),
                         tuple(window_rate(tail, last, n) for n in OWN_WINDOWS))]
     for name in names:
-        waiting = own_cohort(cohorts, name).waiting
+        waiting = settled_waiting(own_cohort(cohorts, name).waiting)
         rows.append(CohortRates(name, waiting.get(last),
                                 tuple(window_rate(waiting, last, n)
                                       for n in OWN_WINDOWS)))
     return rows
 
 
-def background_rate(rows: list[CohortRates], window: int) -> float | None:
+def window_totals(series: list[dict[str, float]], last: str,
+                  months: int) -> tuple[float, float] | None:
     """
-    The median monthly clearance across the cohorts (not the tail) for the
-    `window`-th OWN_WINDOWS: what a file gets when no sweep is reaching it.
-    A median, so the one or two cohorts at the front of a sweep don't drag it up.
+    The summed counts at the start and end of the `months` ending at `last`,
+    over the series with figures at both ends; None if none has.
     """
-    rates = [r.rates[window] for r in rows[1:] if r.rates[window] is not None]
-    return statistics.median(rates) if rates else None
+    first = month_label(month_index(last) - months)
+    kept = [s for s in series if first in s and last in s]
+    if not kept:
+        return None
+    return sum(s[first] for s in kept), sum(s[last] for s in kept)
+
+
+def trickle_rate(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+                 last: str, months: int = RECENT_MONTHS) -> float | None:
+    """
+    The background trickle: the compounded monthly clearance, over the
+    `months` ending at `last`, of the settled cohorts the sweep hasn't
+    reached yet (position().work > 0), pooled as a ratio of sums so the
+    rounding to 100 in each count mostly averages out. The cohorts at the
+    front are left out: they clear at the sweep's speed, not the trickle's.
+    """
+    behind = [settled_waiting(own_cohort(cohorts, name).waiting) for name in names
+              if (pos := position(cohorts, name, last)) and pos.work > 0]
+    totals = window_totals(behind, last, months)
+    return None if totals is None else shrink_rate(*totals, months)
+
+
+def sweep_pace(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+               last: str, background: float,
+               months: int = RECENT_MONTHS) -> float | None:
+    """
+    The sweep's files a month over the `months` ending at `last`: everyone's
+    clearance (the tail before `names[0]` and each settled cohort with figures
+    at both ends) less what a `background` trickle would have taken of them.
+    One pace for every cohort, since there is one sweep. None without figures.
+    """
+    series = [dict(cohorts[names[0]])] + [
+        settled_waiting(own_cohort(cohorts, name).waiting) for name in names]
+    totals = window_totals(series, last, months)
+    if totals is None:
+        return None
+    start, end = totals
+    trickle = start * (1 - (1 - min(max(background, 0.0), 1.0)) ** months)
+    return (start - end - trickle) / months
 
 
 class OrderScore(NamedTuple):
@@ -973,6 +1049,7 @@ class OrderScore(NamedTuple):
     ahead_cleared: float
     newer_start: float
     newer_cleared: float
+    newest: str = ""    # the newest cohort compared, if not just the target
 
     def observed(self) -> float | None:
         """Share of the clearance that came from the people ahead."""
@@ -991,24 +1068,40 @@ class OrderScore(NamedTuple):
         return (seen - self.random()) / (1 - self.random())
 
 
+def compared(cohorts: dict[str, list[tuple[str, float]]], newer: list[str],
+             first: str) -> list[tuple[str, dict[str, float]]]:
+    """
+    (cohort, settled own counts) for each of `newer` that had settled by
+    `first`.
+    """
+    settled = [settled_waiting(own_cohort(cohorts, c).waiting) for c in newer]
+    return [(c, w) for c, w in zip(newer, settled) if first in w]
+
+
 def order_score(cohorts: dict[str, list[tuple[str, float]]], target: str,
                 newer: list[str], last: str, months: int) -> OrderScore | None:
     """
     Clearance over the `months` ending at `last` among the people ahead of
-    `target` and among `newer` (target and the settled cohorts after it).
-    None unless every one of them has figures at both ends.
+    `target` and among `newer` (the settled cohorts after it; the target
+    itself is in neither, so a cohort at the front of a sweep doesn't count
+    against its own score). Each cohort's own counts are read from when its
+    bulge settled (settled_waiting), so a newer cohort that was still
+    bulging when the window opened is left out. None unless the people ahead
+    and every cohort compared have figures at both ends, and at least one
+    newer cohort is compared.
     """
     first = month_label(month_index(last) - months)
-    series = [dict(cohorts.get(target, []))] + [own_cohort(cohorts, c).waiting
-                                                for c in newer]
-    if not newer or any(first not in s or last not in s for s in series):
+    kept = compared(cohorts, newer, first)
+    series = [dict(cohorts.get(target, []))] + [w for _, w in kept]
+    if not kept or any(first not in s or last not in s for s in series):
         return None
     ahead, *own = series
     newer_start = sum(s[first] for s in own)
     if ahead[first] + newer_start <= 0:
         return None
     return OrderScore(months, ahead[first], ahead[first] - ahead[last],
-                      newer_start, newer_start - sum(s[last] for s in own))
+                      newer_start, newer_start - sum(s[last] for s in own),
+                      kept[-1][0])
 
 
 def describe_score(score: float | None) -> str:
@@ -1032,22 +1125,35 @@ class Position(NamedTuple):
 
 
 def cohort_size(waiting: dict[str, float]) -> float | None:
-    """A cohort's size: its largest own still-waiting count from SIZE_FROM on."""
-    counts = [n for period, n in waiting.items() if period >= SIZE_FROM]
-    return max(counts) if counts else None
+    """
+    A cohort's size: its largest own still-waiting count from SIZE_FROM, or
+    from when its bulge settled if that's later. None while it's bulging, or
+    with no count from then on.
+    """
+    settled = settled_from(waiting)
+    if settled is None:
+        return None
+    return max((n for period, n in waiting.items()
+                if period >= max(SIZE_FROM, settled)), default=None)
 
 
 def sweep_left(waiting: dict[str, float], last: str,
-               share: float | None = None) -> float:
+               share: float | None = None, behind: bool = False) -> float:
     """
-    How much of a cohort the sweep has still to clear in `last`: what's
-    waiting above the `share` (default STRAGGLERS) of its size it leaves
-    behind. 0 once it's down to that, or without the figures to tell.
+    How much of a cohort the sweep has still to clear in `last`. If it's
+    working through the cohort now: what's waiting above the `share` (default
+    STRAGGLERS) of its size it leaves behind, 0 once it's down to that. If
+    it's `behind` (unswept work ahead of it): all but `share` of whoever is
+    still waiting when the sweep gets there, and since the trickle thins the
+    cohort and its take alike, that's (1 - share) of what's waiting now.
+    0 without the figures to tell.
     """
     size = cohort_size(waiting)
     if size is None or last not in waiting:
         return 0.0
     share = STRAGGLERS if share is None else share
+    if behind:
+        return max((1 - share) * waiting[last], 0.0)
     return max(waiting[last] - share * size, 0.0)
 
 
@@ -1055,18 +1161,37 @@ def position(cohorts: dict[str, list[tuple[str, float]]], target: str,
              last: str, share: float | None = None) -> Position | None:
     """
     `target`'s Position in `last`, None without its own count then. The work
-    ahead is sweep_left() of each cohort from SUMMARY_FROM up to `target`:
-    everyone before SUMMARY_FROM is a straggler the early-2026 sweep passed,
-    and so is `target` itself if it's before SUMMARY_FROM.
+    ahead is sweep_left() of each cohort from SUMMARY_FROM up to `target`,
+    each one `behind` once there's work ahead of it: everyone before
+    SUMMARY_FROM is a straggler the early-2026 sweep passed, and so is
+    `target` itself if it's before SUMMARY_FROM.
     """
     own = own_cohort(cohorts, target).waiting
     if last not in own:
         return None
     first = max(month_index(SUMMARY_FROM), month_index(min(cohorts)))
-    work = sum(sweep_left(own_cohort(cohorts, month_label(i)).waiting, last, share)
-               for i in range(first, month_index(target)))
-    take = sweep_left(own, last, share) if target >= SUMMARY_FROM else 0.0
+    work = 0.0
+    for i in range(first, month_index(target)):
+        work += sweep_left(own_cohort(cohorts, month_label(i)).waiting, last,
+                           share, work > 0)
+    take = sweep_left(own, last, share, work > 0) if target >= SUMMARY_FROM else 0.0
     return Position(work, own[last], take)
+
+
+def arrival(background: float, pos: Position, pace: float) -> float:
+    """
+    Months until the sweep reaches the cohort: 0 with nothing ahead, inf
+    with no sweep. The trickle keeps thinning the work ahead while the sweep
+    clears `pace` a month, so with a monthly log-rate L the work runs out at
+    ln(1 + work * L / pace) / L rather than work / pace.
+    """
+    work = max(pos.work, 0.0)
+    if work <= 0 or background >= 1:
+        return 0.0
+    if pace <= 0:
+        return float("inf")
+    rate = -math.log1p(-max(background, 0.0))
+    return math.log1p(work * rate / pace) / rate if rate > 0 else work / pace
 
 
 def sweep_chance(months: float, background: float, pos: Position,
@@ -1075,16 +1200,17 @@ def sweep_chance(months: float, background: float, pos: Position,
     Your chance of having been processed `months` from now, under a sweep plus
     background model. Every month a share `background` of every cohort clears
     whatever its age. Meanwhile an oldest-first sweep clears `pace` files a
-    month: first the `pos.work` ahead of your cohort, then `pos.take` of your
-    cohort's `pos.waiting`, and moves on. Files within a month are taken in
-    random order.
+    month: first the `pos.work` ahead of your cohort (arrival()), then
+    `pos.take` / `pos.waiting` of whoever in your cohort the trickle has left
+    by then, and moves on. Files within a month are taken in random order.
     """
-    base = max(background, 0.0)
+    base = min(max(background, 0.0), 1.0)
     swept = 0.0
     if pace > 0 and pos.waiting > 0:
-        arrive = max(pos.work, 0.0) / pace
+        arrive = arrival(base, pos, pace)
         cap = min(max(pos.take, 0.0) / pos.waiting, 1.0)
-        swept = min(max((months - arrive) * pace / pos.waiting, 0.0), cap)
+        there = pos.waiting * (1 - base) ** arrive if months > arrive else 0.0
+        swept = min((months - arrive) * pace / there, cap) if there > 0 else 0.0
     return 1 - (1 - base) ** months * (1 - swept)
 
 
@@ -1102,29 +1228,24 @@ def months_to_chance(chance: float, background: float, pos: Position,
     return hi
 
 
-def best_pace(processed: list[float]) -> float:
-    """The fastest average over any RECENT_MONTHS consecutive months."""
-    n = min(RECENT_MONTHS, len(processed))
-    return max(statistics.mean(processed[i:i + n])
-               for i in range(len(processed) - n + 1))
-
-
-def fifo_paces(series: list[tuple[str, float]], background: float = 0.0
-               ) -> list[tuple[str, float | None]]:
+def fifo_paces(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+               last: str, background: float) -> list[tuple[str, float | None]]:
     """
     The --fifo estimate rows: (label, sweep pace); None for no sweep at all,
-    the only row when there's a single month and so no pace. A pace is the
-    monthly drop in the people ahead less what the `background` trickle takes
-    of them, which sweep_chance() already counts.
+    the only row when there's no RECENT_MONTHS window to measure a pace in.
+    The recent pace is sweep_pace() at `last`; the best is the fastest
+    sweep_pace() over any window ending in a month the tail has a figure
+    for, each net of the trickle measured over that same window.
     """
-    entered = [count for _, count in series]
-    processed = processed_per_month(entered)
-    if not processed:
+    recent = sweep_pace(cohorts, names, last, background)
+    if recent is None:
         return [("no sweep", None)]
-    trickle = max(background, 0.0) * entered[0]
+    paces = [sweep_pace(cohorts, names, end, fifo_background(cohorts, names, end)[1])
+             for end, _ in cohorts[names[0]] if end <= last]
     return [("no sweep", None),
-            (f"sweep, recent {RECENT_MONTHS} mo", recent_pace(processed)[0] - trickle),
-            (f"sweep, best {RECENT_MONTHS} mo", best_pace(processed) - trickle)]
+            (f"sweep, recent {RECENT_MONTHS} mo", recent),
+            (f"sweep, best {RECENT_MONTHS} mo",
+             max(p for p in paces if p is not None))]
 
 
 def print_fifo_table(rows: list[CohortRates], target: str, width: int) -> None:
@@ -1147,17 +1268,24 @@ def print_fifo_table(rows: list[CohortRates], target: str, width: int) -> None:
 def print_order(scores: list[OrderScore], target: str, newer: list[str],
                 width: int) -> None:
     """The oldest-first score for each window, with the shares behind it."""
-    span = target if newer == [target] else f"{target} to {newer[-1]}"
+    if not newer:
+        print(wrap(f"No settled cohort is newer than {target}, so there's "
+                   "nothing behind it to compare with.",
+                   width, indent="  ", hanging="  "))
+        return
+    span = newer[0] if len(newer) == 1 else f"{newer[0]} to {newer[-1]}"
     print(wrap(f"Of the files cleared, the share that were ahead of {target}, "
-               f"against everyone from {span}. Strict oldest-first would make "
-               "it 100%; random order would match their share of the files.",
-               width, indent="  ", hanging="  "))
+               f"against those behind it from {span}. Strict oldest-first "
+               "would make it 100%; random order would match their share of "
+               "the files.", width, indent="  ", hanging="  "))
     for s in scores:
         seen, score = s.observed(), s.score()
         seen_t = "n/a" if seen is None else f"{seen * 100:.0f}%"
         score_t = "n/a" if score is None else f"{score:.2f}"
+        line_span = (newer[0] if s.newest in ("", newer[0])
+                     else f"{newer[0]} to {s.newest}")
         print(wrap(f"Last {s.months} months: {fmt_count(s.ahead_cleared)} "
-                   f"ahead and {fmt_count(s.newer_cleared)} from {span} "
+                   f"ahead and {fmt_count(s.newer_cleared)} from {line_span} "
                    f"cleared, {seen_t} ahead against {s.random() * 100:.0f}% "
                    f"at random. Score {score_t} (0 random, 1 oldest-first): "
                    f"{describe_score(score)}.",
@@ -1167,13 +1295,32 @@ def print_order(scores: list[OrderScore], target: str, newer: list[str],
 def estimate_cells(background: float, pos: Position,
                    pace: float | None) -> list[str]:
     """
-    One estimate row as text: months to the first two ESTIMATE_ODDS as a
-    range ("14.7-70.6m", "5.3-never", or just "never"), then to the last.
+    One estimate row as text: when the sweep arrives (arrival_text), months
+    to the first two ESTIMATE_ODDS as a range ("14.7-70.6m", "5.3-never", or
+    just "never"), then to the last.
     """
     low, high, tail = (fmt_months_short(months_to_chance(
         q, background, pos, pace or 0.0)) for q in ESTIMATE_ODDS)
     span = "never" if low == "never" else f"{low}-{high}"
-    return [span if high == "never" else f"{span}m", tail]
+    return [arrival_text(background, pos, pace),
+            span if high == "never" else f"{span}m", tail]
+
+
+def arrival_text(background: float, pos: Position, pace: float | None) -> str:
+    """
+    Months until the sweep reaches the cohort: "-" for no sweep, "now" if
+    it's working through the cohort, "passed" if it has finished with it,
+    "never" if it isn't moving.
+    """
+    if pace is None:
+        return "-"
+    if pos.work <= 0 and pos.take <= 0:
+        return "passed"
+    if pace <= 0:
+        return "never"
+    if pos.work <= 0:
+        return "now"
+    return fmt_months_short(arrival(background, pos, pace))
 
 
 def pace_text(pace: float | None) -> str:
@@ -1194,19 +1341,25 @@ def estimate_group(cells: list[str], widths: list[int]) -> str:
 
 def print_estimates(paces: list[tuple[str, float | None]], background: float,
                     pos: Position, width: int) -> None:
-    """Months until your chance reaches ESTIMATE_ODDS, one row per pace."""
+    """
+    Months until your chance reaches ESTIMATE_ODDS, one row per pace. When
+    a row doesn't fit on one line, its label and pace go on a line above.
+    """
     rows = [(label, pace_text(pace), estimate_cells(background, pos, pace))
             for label, pace in paces]
     label_w = max(len(label) for label, _, _ in rows)
     widths = estimate_widths([cells for *_, cells in rows], ESTIMATE_HEADS)
     heads = "".join(f"  {h:>{w}}" for h, w in zip(ESTIMATE_HEADS, widths))
-    inline = 2 + label_w + 2 + SUMMARY_CELL + len(heads) <= width
-    lead = f"  {'':{label_w}}  " if inline else "    "
-    print(paint(f"{lead}{'pace/mo':>{SUMMARY_CELL}}{heads}", "dim"))
+    if 2 + label_w + 2 + SUMMARY_CELL + len(heads) > width:
+        print(paint(f"  {heads}", "dim"))
+        for label, pace_t, cells in rows:
+            print(f"  {label}" + ("" if pace_t == "-" else f", {pace_t} a month")
+                  + f"\n    {estimate_group(cells, widths)}")
+        return
+    print(paint(f"  {'':{label_w}}  {'pace/mo':>{SUMMARY_CELL}}{heads}", "dim"))
     for label, pace_t, cells in rows:
-        shown = f"{pace_t:>{SUMMARY_CELL}}  {estimate_group(cells, widths)}"
-        print(f"  {label:<{label_w}}  {shown}" if inline
-              else f"  {label}\n    {shown}")
+        print(f"  {label:<{label_w}}  {pace_t:>{SUMMARY_CELL}}  "
+              f"{estimate_group(cells, widths)}")
 
 
 def fifo_start(cohorts: dict[str, list[tuple[str, float]]], title: str,
@@ -1215,45 +1368,82 @@ def fifo_start(cohorts: dict[str, list[tuple[str, float]]], title: str,
     print_banner(title, width)
     names = settled_cohorts(cohorts)
     if not names:
-        print(wrap(f"No cohort from {SUMMARY_FROM} on is {FIFO_SETTLED} months "
-                   f"old with figures in {HISTORY_PATH.name} yet.", width))
+        print(wrap(f"No cohort from {SUMMARY_FROM} on in {HISTORY_PATH.name} "
+                   "has settled after its bulge yet.", width))
     return names
 
 
 def unsettled_note(names: list[str]) -> str:
     """Why the cohorts after the last settled one are left out."""
-    return (f"Cohorts newer than {names[-1]} are left out: applications dated "
-            "to a month keep arriving for about a year, so their counts are "
-            "still growing.")
+    return (f"Cohorts newer than {names[-1]} are left out because of the "
+            "bulge: a new cohort's count swings up, sometimes many times over, "
+            "and falls back during its first few months. A cohort is used once "
+            f"it has held steady for {BULGE_MONTHS} months in a row (no rise "
+            f"beyond rounding, no fall over {BULGE_DROP:.0%}).")
 
 
-def fifo_background(rows: list[CohortRates]) -> tuple[float | None, float]:
+def fifo_background(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+                    last: str) -> tuple[float | None, float]:
     """
-    The typical cohort's rate over the longest OWN_WINDOWS, and the background
-    the model uses from it: a growing typical cohort clears nothing.
+    The trickle_rate() at `last`, and the background the model uses from it:
+    a growing set of cohorts clears nothing.
     """
-    typical = background_rate(rows, len(OWN_WINDOWS) - 1)
-    return typical, 0.0 if typical is None else max(typical, 0.0)
+    trickle = trickle_rate(cohorts, names, last)
+    return trickle, 0.0 if trickle is None else max(trickle, 0.0)
 
 
-ESTIMATE_PROSE = ("25-75% is the months from now until your chance of having "
-                  "been processed is 25% and 75%; 90% is the months until "
-                  "it's 90%.")
+def half_life(rate: float) -> str:
+    """Months until half of a group clearing at `rate` (> 0) a month is left."""
+    return f"{math.log(0.5) / math.log1p(-min(rate, 0.999)):.0f} months"
 
 
-def sweep_prose(background: float) -> str:
+ESTIMATE_PROSE = ("Arrives is the months until the sweep reaches the cohort "
+                  "('now' if it's working through it, 'passed' if it has "
+                  "finished with it). 25-75% is the months from now until "
+                  "your chance of having been processed is 25% and 75%; 90% "
+                  "is the months until it's 90%.")
+
+
+def leftover_prose(background: float, first: str, tail: float | None) -> str:
+    """
+    How long the leftovers wait at the trickle, and, when the people before
+    `first` have lately cleared faster than that (`tail`), how long at their rate.
+    """
+    text = ("With no trickle, a cohort's leftovers never clear" if background <= 0
+            else "At the trickle, half of a cohort's leftovers are still "
+                 f"waiting after {half_life(background)}")
+    if tail is None or tail <= background:
+        return text + "."
+    return (text + f"; if they cleared as fast as the people before {first} "
+            f"have over the last {RECENT_MONTHS} months ({fmt_pct(tail)} a "
+            f"month), it would be {half_life(tail)}, and the 75% and 90% times "
+            "would be much shorter.")
+
+
+def sweep_prose(background: float, pace_words: str, first: str,
+                tail: float | None) -> str:
     """How the estimate model works, in plain words, for both reports."""
     return (f"Two things clear files. A background trickle takes "
-            f"{fmt_pct(background)} of every cohort each month, old or new. An "
-            "oldest-first sweep, at the row's pace (the drop in the people "
-            "ahead, less what the trickle takes of them), works through each "
-            f"cohort until {STRAGGLERS:.0%} of it is left and moves on. Those "
-            "leftovers don't hold the sweep up again: it reaches a cohort once "
-            "the unswept files ahead of it are cleared. If you're in the last "
-            f"{STRAGGLERS:.0%}, the sweep has passed you and only the trickle "
-            "is left, which is why 90% takes so much longer. A cohort's size is "
-            f"its largest count from {SIZE_FROM} on, after the C-3 change "
-            "settled.")
+            f"{fmt_pct(background)} of every cohort each month, old or new: "
+            "the pooled rate of the cohorts the sweep hasn't reached, over the "
+            f"last {RECENT_MONTHS} months. An oldest-first sweep, {pace_words} "
+            "(everyone's clearance less what the trickle took), works through "
+            f"each cohort until {STRAGGLERS:.0%} of those still waiting when it "
+            "gets there are left, and moves on. The trickle thins the files "
+            "ahead too, so the sweep arrives sooner than they'd take at its "
+            "pace alone. Those leftovers don't hold the sweep up again. If "
+            "you're one of them only the trickle is left, which is why the 75% "
+            "and 90% times are so much longer: they're set by the trickle, not "
+            "by your place in the queue. " + leftover_prose(background, first, tail)
+            + " For the cohort the sweep is in now, the "
+            f"{STRAGGLERS:.0%} is of its largest count from {SIZE_FROM} on, "
+            "after the C-3 change settled.")
+
+
+def tail_rate(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+              last: str) -> float | None:
+    """The people before `names[0]`: their compounded clearance lately."""
+    return window_rate(dict(cohorts[names[0]]), last, RECENT_MONTHS)
 
 
 def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
@@ -1271,11 +1461,11 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
                + unsettled_note(names), width))
     print()
     print_fifo_table(rows, target, width)
-    typical, background = fifo_background(rows)
+    trickle, background = fifo_background(cohorts, names, last)
     print()
-    label = f"Typical cohort, last {OWN_WINDOWS[-1]} mo"
-    print(stat_line(label, "n/a" if typical is None
-                    else f"{fmt_pct(typical)} a month", width,
+    label = f"Trickle, last {RECENT_MONTHS} mo"
+    print(stat_line(label, "n/a" if trickle is None
+                    else f"{fmt_pct(trickle)} a month", width,
                     pad=len(label) + 2))
 
     own = own_cohort(cohorts, target).waiting
@@ -1285,7 +1475,7 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
                    "order score or estimate for it.", width))
         print(paint("=" * width, "cyan") + "\n")
         return
-    newer = [target] + [c for c in names if c > target]
+    newer = [c for c in names if c > target]
     scores = [s for n in OWN_WINDOWS
               if (s := order_score(cohorts, target, newer, last, n))]
     print("\n" + paint("Oldest-first or random?", "bold", "cyan"))
@@ -1294,21 +1484,23 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
     pos = position(cohorts, target, last)
     ahead = dict(cohorts[target])[last]
     print("\n" + paint(f"When will {target} be processed?", "bold", "cyan"))
-    print(wrap(ESTIMATE_PROSE + " " + sweep_prose(background)
+    print(wrap(ESTIMATE_PROSE + " " + sweep_prose(
+                   background, "at the row's pace", names[0],
+                   tail_rate(cohorts, names, last))
                + f" For {target}: of the {fmt_count(ahead)} ahead, "
                f"{fmt_count(pos.work)} are still to be swept, then the sweep "
                f"clears {fmt_count(pos.take)} of its {fmt_count(pos.waiting)}. "
                "'No sweep' means the current lull continues.", width))
     print()
-    print_estimates(fifo_paces(cohorts[target], background), background, pos,
-                    width)
+    print_estimates(fifo_paces(cohorts, names, last, background), background,
+                    pos, width)
     print(paint("=" * width, "cyan") + "\n")
 
 
 # The pace rows --summarize shows for each cohort, by fifo_paces() label: the
 # recent pace, which backtested closest (median and best ran far too fast).
 FIFO_SUMMARY_PACES = {f"sweep, recent {RECENT_MONTHS} mo": f"recent {RECENT_MONTHS} mo"}
-FIFO_SUMMARY_HEADS = ("pace",) + tuple(h.split()[0] for h in ESTIMATE_HEADS)
+FIFO_SUMMARY_HEADS = tuple(h.split()[0] for h in ESTIMATE_HEADS)
 
 
 def fifo_percent(score: float | None) -> str:
@@ -1339,21 +1531,22 @@ def fifo_summary_rows(cohorts: dict[str, list[tuple[str, float]]],
                       background: float) -> list[FifoSummaryRow]:
     """
     Each settled cohort's people ahead, files still to be swept ahead of it
-    and own still waiting in `last`, its OrderScore over the longest
-    OWN_WINDOWS against itself and the settled cohorts after it, and the
-    FIFO_SUMMARY_PACES estimate rows.
+    and own still waiting in `last`, its OrderScore over the last
+    RECENT_MONTHS against the settled cohorts after it, and the
+    FIFO_SUMMARY_PACES estimate rows (one shared pace).
     """
+    shared = [(FIFO_SUMMARY_PACES[label], pace)
+              for label, pace in fifo_paces(cohorts, names, last, background)
+              if label in FIFO_SUMMARY_PACES]
     rows = []
     for name in names:
         pos = position(cohorts, name, last)
         if pos is None:
             continue
-        newer = [c for c in names if c >= name]
-        score = order_score(cohorts, name, newer, last, OWN_WINDOWS[-1])
-        paces = [(FIFO_SUMMARY_PACES[label],
-                  [pace_text(pace), *estimate_cells(background, pos, pace)])
-                 for label, pace in fifo_paces(cohorts[name], background)
-                 if label in FIFO_SUMMARY_PACES]
+        newer = [c for c in names if c > name]
+        score = order_score(cohorts, name, newer, last, RECENT_MONTHS)
+        paces = [(label, estimate_cells(background, pos, pace))
+                 for label, pace in shared]
         rows.append(FifoSummaryRow(name, fmt_count(dict(cohorts[name])[last]),
                                    fmt_count(pos.work), fmt_count(pos.waiting),
                                    leftover_percent(pos),
@@ -1430,8 +1623,10 @@ def print_fifo_summary(cohorts: dict[str, list[tuple[str, float]]], width: int,
     if not names:
         return
     last = latest_period(cohorts)
-    _, background = fifo_background(cohort_rates(cohorts, names, last))
+    _, background = fifo_background(cohorts, names, last)
     rows = fifo_summary_rows(cohorts, names, last, background)
+    pace = dict(fifo_paces(cohorts, names, last, background)).get(
+        f"sweep, recent {RECENT_MONTHS} mo")
     print(wrap(f"For each cohort from {names[0]}, in {last}: ahead is the "
                "people ahead of it, to sweep the part of them the sweep still "
                "has to clear, and waiting its own applicants still waiting. "
@@ -1440,12 +1635,16 @@ def print_fifo_summary(cohorts: dict[str, list[tuple[str, float]]], width: int,
                "waiting in that cohort, roughly your chance of being one of "
                "them. The higher it is, the more the 90% time is the one to go "
                "by. % fifo is how oldest-first processing was for it over the "
-               f"last {OWN_WINDOWS[-1]} months: 0% means the files cleared were "
-               "a random pick, 100% that every one was ahead of it. Pace is the "
-               f"sweep's files a month over the last {RECENT_MONTHS} months. "
-               + ESTIMATE_PROSE, width))
+               f"last {RECENT_MONTHS} months: 0% means the files cleared were "
+               "a random pick, 100% that every one was ahead of it rather than "
+               "behind it. " + ESTIMATE_PROSE, width))
     print()
-    print(wrap(sweep_prose(background) + " " + unsettled_note(names), width))
+    pace_words = ("at a pace too new to measure" if pace is None else
+                  f"at {fmt_count(max(pace, 0))} files a month over the last "
+                  f"{RECENT_MONTHS} months")
+    print(wrap(sweep_prose(background, pace_words, names[0],
+                           tail_rate(cohorts, names, last))
+               + " " + unsettled_note(names), width))
     print()
     if not rows:
         print(wrap(f"No settled cohort has figures for {last}.", width))
@@ -1540,8 +1739,8 @@ def parse_args(argv) -> argparse.Namespace:
     parser.add_argument(
         "--summarize", action="store_true",
         help=f"no prompt: when each settled cohort from {SUMMARY_FROM} in "
-             f"{HISTORY_PATH.name} is likely to be processed, at its recent "
-             f"pace (with --fifo COHORT, that row is bold)")
+             f"{HISTORY_PATH.name} is likely to be processed, at the sweep's "
+             f"recent pace (with --fifo COHORT, that row is bold)")
     parser.add_argument(
         "--fifo", nargs="?", const=DEFAULT_COHORT, metavar="COHORT",
         type=cohort_arg,

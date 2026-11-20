@@ -33,6 +33,7 @@ class Case(NamedTuple):
     actual: float     # share of the cohort's own waiting at `cut` cleared by then
     seen: dict        # the history up to `cut`
     background: float
+    pace: float       # the shared sweep pace at `cut`, never below 0
 
 
 def truncate(cohorts: dict[str, list[tuple[str, float]]], cut: str) -> dict:
@@ -52,7 +53,8 @@ def cases(cohorts: dict[str, list[tuple[str, float]]], start: str) -> list[Case]
         names = b.settled_cohorts(seen)
         if not names:
             continue
-        _, background = b.fifo_background(b.cohort_rates(seen, names, cut))
+        _, background = b.fifo_background(seen, names, cut)
+        pace = max(b.sweep_pace(seen, names, cut, background) or 0.0, 0.0)
         for horizon in range(1, MAX_HORIZON + 1):
             end = b.month_label(b.month_index(cut) + horizon)
             for name in names:
@@ -60,30 +62,29 @@ def cases(cohorts: dict[str, list[tuple[str, float]]], start: str) -> list[Case]
                 later = b.own_cohort(cohorts, name).waiting.get(end)
                 if now and later is not None:
                     out.append(Case(cut, horizon, name, 1 - later / now, seen,
-                                    background))
+                                    background, pace))
     return out
 
 
-def recent_pace(case: Case, background: float) -> float:
-    """The cohort's recent people-ahead pace, net of `background`; 0 if none."""
-    paces = dict(b.fifo_paces(case.seen[case.cohort], background))
-    return max(paces.get(f"sweep, recent {b.RECENT_MONTHS} mo") or 0.0, 0.0)
+def ahead_pace(case: Case) -> float:
+    """The recent drop in the cohort's own people ahead, a month; 0 if none."""
+    processed = b.processed_per_month([n for _, n in case.seen[case.cohort]])
+    return max(b.recent_pace(processed)[0], 0.0) if processed else 0.0
 
 
 def predictions(case: Case) -> dict[str, float]:
     """Each model's predicted share cleared for `case`."""
     out = {}
-    pace = recent_pace(case, case.background)
     for share in SHARES:
         pos = b.position(case.seen, case.cohort, case.cut, share)
         out[f"sweep, {share:.0%} left"] = b.sweep_chance(
-            case.horizon, case.background, pos, pace)
+            case.horizon, case.background, pos, case.pace)
     own = b.own_cohort(case.seen, case.cohort).waiting
     rate = b.window_rate(own, case.cut, b.RECENT_MONTHS)
     out[f"own rate, {b.RECENT_MONTHS} mo"] = (
         1 - (1 - max(rate or 0.0, 0.0)) ** case.horizon)
     ahead = case.seen[case.cohort][0][1]
-    raw = recent_pace(case, 0.0)
+    raw = ahead_pace(case)
     out["random order"] = min(raw * case.horizon / ahead, 1.0) if ahead > 0 else 1.0
     return out
 

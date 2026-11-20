@@ -19,9 +19,12 @@ class Backtest(unittest.TestCase):
 
     def test_cases(self):
         all_cases = bt.cases(FIFO_COHORTS, "2026-01")
-        # Settled cohorts need a cutoff 12 months on: only 2025-05 at 2026-05..09.
-        self.assertEqual(sorted({(c.cut, c.cohort) for c in all_cases})[:2],
-                         [("2026-05", "2025-05"), ("2026-06", "2025-05")])
+        # The fixture's own counts are steady from 2026-01, so every cohort
+        # with a next one has settled by the first cutoff with three steady
+        # months after SIZE_FROM's floor: 2026-04.
+        self.assertEqual(sorted({(c.cut, c.cohort) for c in all_cases})[:3],
+                         [("2026-04", "2025-05"), ("2026-04", "2025-06"),
+                          ("2026-04", "2025-07")])
         one = next(c for c in all_cases
                    if (c.cut, c.horizon, c.cohort) == ("2026-07", 3, "2025-05"))
         # 2025-05's own waiting: 1,600 in 2026-07, 1,500 in 2026-10.
@@ -41,8 +44,13 @@ class Backtest(unittest.TestCase):
             self.assertTrue(0 <= value <= 1)
         pos = b.position(case.seen, "2025-05", "2026-07", 0.5)
         self.assertEqual(got["sweep, 50% left"],
-                         b.sweep_chance(3, case.background, pos,
-                                        bt.recent_pace(case, case.background)))
+                         b.sweep_chance(3, case.background, pos, case.pace))
+        # One pace per cutoff: everyone's clearance net of the trickle.
+        names = b.settled_cohorts(case.seen)
+        self.assertEqual(case.background,
+                         b.fifo_background(case.seen, names, "2026-07")[1])
+        self.assertEqual(case.pace, max(b.sweep_pace(case.seen, names, "2026-07",
+                                                     case.background), 0.0))
         own = b.own_cohort(case.seen, "2025-05").waiting
         rate = b.window_rate(own, "2026-07", 3)
         self.assertAlmostEqual(got["own rate, 3 mo"], 1 - (1 - rate) ** 3)
@@ -50,15 +58,18 @@ class Backtest(unittest.TestCase):
         empty = case._replace(seen={**case.seen, "2025-05": [("2026-07", 0.0)]})
         self.assertEqual(bt.predictions(empty)["random order"], 1.0)
 
-    def test_recent_pace_nets_out_the_background(self):
-        case = bt.Case("2026-10", 1, "2025-07", 0.0, FIFO_COHORTS, 0.0)
-        self.assertEqual(bt.recent_pace(case, 0.0), 300)
-        self.assertEqual(bt.recent_pace(case, 0.01), 300 - 93)
-        self.assertEqual(bt.recent_pace(case, 1.0), 0)
+    def test_ahead_pace_is_the_cohorts_own_people_ahead(self):
+        # 2025-07's people ahead: 10,200 in 2026-07, 9,300 in 2026-10.
+        case = bt.Case("2026-10", 1, "2025-07", 0.0, FIFO_COHORTS, 0.0, 0.0)
+        self.assertEqual(bt.ahead_pace(case), 300)
+        grew = case._replace(seen={"2025-07": [("2026-10", 900.0), ("2026-09", 500.0)]})
+        self.assertEqual(bt.ahead_pace(grew), 0)
+        one = case._replace(seen={"2025-07": [("2026-10", 900.0)]})
+        self.assertEqual(bt.ahead_pace(one), 0)
 
     def test_score_and_report(self):
-        cases = [bt.Case("2026-07", 1, "x", 0.5, {}, 0.0),
-                 bt.Case("2026-08", 2, "x", 0.1, {}, 0.0)]
+        cases = [bt.Case("2026-07", 1, "x", 0.5, {}, 0.0, 0.0),
+                 bt.Case("2026-08", 2, "x", 0.1, {}, 0.0, 0.0)]
         with unittest.mock.patch.object(
                 bt, "predictions", side_effect=[{"a": 0.6, "b": 0.5},
                                                 {"a": 0.1, "b": 0.4}]):
@@ -84,7 +95,7 @@ class Backtest(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 self.assertEqual(bt.main(["--from", "2026-01"]), 0)
                 self.assertEqual(bt.main(["--from", "2026/10"]), 1)
-        self.assertIn("cases: cutoffs 2026-05 to 2026-09", out.getvalue())
+        self.assertIn("cases: cutoffs 2026-04 to 2026-09", out.getvalue())
         self.assertIn("No cutoff has a settled cohort", out.getvalue())
 
 

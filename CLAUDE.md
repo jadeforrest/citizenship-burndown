@@ -56,60 +56,109 @@ BURNDOWN_WIDTH=50 python3 burndown.py   # check the narrow layouts
 
 `python3 burndown.py --fifo [COHORT]` (default `DEFAULT_COHORT`; `2025/7`
 style is normalised by `cohort_arg`) skips the prompt and asks how close to
-oldest-first the processing is. Only *settled* cohorts are compared
-(`settled_cohorts`: from `SUMMARY_FROM`, with a next cohort, and at least
-`FIFO_SETTLED` = 12 months older than the latest period, since late intake
-keeps swinging newer cohorts' own counts by thousands). It prints:
+oldest-first the processing is. Only *settled* cohorts are compared, because
+of what Jade calls **the bulge**: a new cohort's own count first shows about
+2,000, then swings up, sometimes 10-30x, and falls back during its first few
+months before settling (2026-03 went 2,300 -> 68,500 -> 7,400; cohorts have
+settled within about 3-7 months). It isn't steady late intake, since the
+counts come back down, and the cause isn't known. `settled_from` finds where
+a cohort settled: the start of its first `BULGE_MONTHS` (3) steady months in a
+row, a month being `steady` if the count rose by no more than `BULGE_RISE`
+(200, two counts rounded to 100) and fell by no more than `BULGE_DROP` (15%).
+`settled_cohorts` is the run of consecutive settled cohorts from the first one
+on or after `SUMMARY_FROM`, stopping at the first still bulging, so post-C-3
+cohorts join as soon as their bulge has settled. Rates, order scores and sizes
+read a cohort's counts only from where it settled (`settled_waiting`); an
+`OrderScore` window that opens before a newer cohort settled leaves that
+cohort out and names the newest it did compare (`OrderScore.newest`). It
+prints:
 
 - each settled cohort's own still-waiting count and compounded monthly
   clearance over the `OWN_WINDOWS`, after an `earlier` row for everyone
   before the first of them (`cohort_rates`);
-- the typical cohort's rate (`background_rate`, the median, so the front of a
-  sweep doesn't drag it up);
+- the trickle (`trickle_rate`, via `fifo_background`): the pooled compounded
+  clearance over `RECENT_MONTHS` of the settled cohorts the sweep hasn't
+  reached (`Position.work > 0`), a ratio of sums (`window_totals`) so the
+  rounding to 100 mostly averages out. It replaced a median of per-cohort
+  6-month rates on 2026-11-20: the front cohorts pulled that median up to
+  1.8% when the cohorts behind them were clearing about 1.3-1.6%;
 - an `OrderScore` per window: of the files cleared, the share that were ahead
-  of COHORT versus COHORT and the newer settled cohorts, rescaled so 0 is
-  random order and 1 strict oldest-first;
-- months until COHORT's chance of being processed reaches each
+  of COHORT versus the settled cohorts *after* it (COHORT itself is in
+  neither, so a cohort at the front of the sweep doesn't count against its
+  own score; with nothing newer there's no score), rescaled so 0 is random
+  order and 1 strict oldest-first;
+- for each pace row (none, recent, best `RECENT_MONTHS` window), when the
+  sweep `arrives` (`arrival_text`: months, `now`, `passed`, `never`), then
+  months until COHORT's chance of being processed reaches each
   `ESTIMATE_ODDS` — the first two shown as one range cell (`14.7-70.6m`,
-  `5.3-never`, `never`), the last on its own, under `ESTIMATE_HEADS` —
-  from `sweep_chance`: the background rate compounding, plus
-  an oldest-first sweep at the row's pace (none, recent, best
-  `RECENT_MONTHS` window; median was dropped with the old summary). Paces
-  (`fifo_paces(series, background)`) are the people-ahead drop less
-  background × people ahead, since `sweep_chance` already applies the
-  trickle; the `pace/mo` column shows that net figure. The sweep works from COHORT's `Position`
-  (`position`): `work`, the files it still has to clear ahead of COHORT, then
-  `take` of COHORT's own `waiting`. Both come from `sweep_left`: a cohort's
-  current own count minus the `STRAGGLERS` (50%) share of its size it leaves
-  behind, floored at 0, so leftovers the sweep already passed don't hold it
-  up again. Size (`cohort_size`) is the largest own count from `SIZE_FROM`
-  (2026-03) on: the C-3 change in December 2025 makes earlier counts jump
-  (see the 2025-11 note under `SIZE_FROM`). Everyone before `SUMMARY_FROM` is
-  taken as already passed (the early-2026 sweep took that tail from 5,800 to
-  about 1,500). `months_to_chance` bisects the chance (it only rises), `inf`
-  past `ESTIMATE_CAP`. `STRAGGLERS` was a hand-picked 30% until
-  [backtest.py](backtest.py) (below) put 20-60% within about a point of each
-  other once the pace had settled, with 50% marginally best and matching the
-  50-55% that 2024-12 and 2025-01 were left at. `sweep_left` and `position`
-  take a `share` argument so the backtest can try others. Because `take`
-  varies by cohort, so does the 90% column.
+  `5.3-never`, `never`), the last on its own, under `ESTIMATE_HEADS` — from
+  `sweep_chance`: the trickle compounding, plus an oldest-first sweep.
+
+There is one sweep, so there is one pace for every cohort (`sweep_pace`):
+everyone's clearance over the window (the `earlier` tail plus every settled
+cohort with figures at both ends) less what the trickle would have taken of
+them. `fifo_paces(cohorts, names, last, background)` gives the recent one and
+the best over any window ending in a month the tail has a figure for, each
+net of the trickle measured over its own window. (Until 2026-11-20 each cohort
+got its own pace from its own people-ahead drop less trickle × people ahead;
+for the later cohorts that was a small difference of two big numbers, and the
+rows contradicted each other, 40-240 a month.)
+
+The sweep works from COHORT's `Position` (`position`): `work`, the files it
+still has to clear ahead of COHORT, then `take` of COHORT's own `waiting`.
+Both come from `sweep_left`. For the cohort the sweep is in now (no work
+ahead of it) that's its current count minus the `STRAGGLERS` (50%) share of
+its size, floored at 0, so leftovers already passed don't hold it up again.
+Every cohort behind it (`behind=True`) gives up all but `STRAGGLERS` of
+whoever is still waiting when the sweep gets there, which is (1 − share) of
+its current count because the trickle thins the cohort and its take alike;
+charging the trickle's past losses to the sweep's share (the old rule) pushed
+leftover % to 52-64%. `arrival` thins the work ahead by the trickle too:
+`ln(1 + work·L / pace) / L` with L the trickle's monthly log-rate, rather
+than `work / pace` (2026-02 was 80 months the old way, about 40 now), and
+`sweep_chance` takes `take / waiting` of whoever the trickle has left at
+arrival. Size (`cohort_size`) is the largest own count from `SIZE_FROM`
+(2026-03) or from where the cohort's bulge settled, whichever is later
+(`None` while it's bulging or with no count from then): the C-3 change in
+December 2025 makes earlier counts jump, and this also keeps 2025-11's
+2026-03 count of 4,200 out (its size is 2,900). Everyone before
+`SUMMARY_FROM` is taken as already passed (the early-2026 sweep took that
+tail from 5,800 to about 1,500). `months_to_chance` bisects the chance (it
+only rises), `inf` past `ESTIMATE_CAP`.
+
+Once the sweep has passed you, only the trickle is left, so the 75% and 90%
+times are set by the trickle and the leftover share, not by your place in the
+queue: every cohort the sweep reaches in time shows the same figures. The
+prose says so, and `leftover_prose` gives the leftovers' half-life at the
+trickle and, when the `earlier` tail has lately cleared faster
+(`tail_rate`), at that rate too, since the pre-2025 leftovers have been
+clearing at 3.5-4.5% a month, 2-3x the trickle. Those long times are an
+extrapolation the backtest can't check (its horizons are 1-6 months).
+`STRAGGLERS` was a hand-picked 30% until [backtest.py](backtest.py) (below)
+put 20-60% within about a point of each other once the pace had settled, with
+50% marginally best and matching the 50-55% that 2024-12 and 2025-01 were left
+at. `sweep_left` and `position` take a `share` argument so the backtest can
+try others.
 
 `python3 burndown.py --summarize` skips the prompt and runs
 `print_fifo_summary`: the `--fifo` estimates for every settled cohort, one row
 each, with people ahead, "to sweep" (`Position.work`), its own still waiting,
 "leftover %" (`leftover_percent`: 1 − take / waiting, the share the sweep
 won't take, so roughly the chance a still-waiting applicant is a leftover;
-explained in the report's first paragraph), "% fifo" (its `OrderScore` over the longest `OWN_WINDOWS` against itself and
-the newer settled cohorts, `fifo_percent`, clamped to ±999%), and the estimate
-cells at the recent pace only (`FIFO_SUMMARY_PACES`). The recent pace is the
-only one shown because it backtested closest: from 2026-05 and 2026-08 cutoffs,
-median paces (which still hold the fast early-2026 months) over-predicted
-clearance badly. `--summarize --fifo COHORT` just bolds COHORT's row. The
-table is about 79 columns on today's data; narrower, it stacks a block per
-cohort, and at 40 a pace's cells drop under its name. `sweep_prose`,
-`unsettled_note` and `ESTIMATE_PROSE` are shared with `--fifo`, so a wording
-change there shows up in both. (The older random-order `--summarize` table,
-with 50%/100% times and a best guess, was removed on 2026-11-20.)
+explained in the report's first paragraph), "% fifo" (its `OrderScore` over
+`RECENT_MONTHS` against the newer settled cohorts, `fifo_percent`, clamped to
+±999%), and the estimate cells (arrives, 25-75%, 90%) at the shared recent
+pace only (`FIFO_SUMMARY_PACES`), which the prose states. The recent pace is
+the only one shown because it backtested closest: from 2026-05 and 2026-08
+cutoffs, median paces (which still hold the fast early-2026 months)
+over-predicted clearance badly. `--summarize --fifo COHORT` just bolds
+COHORT's row. The table is about 85 columns on today's data; narrower, it
+stacks a block per cohort, and at 40 a pace's cells drop under its name. In
+`--fifo`'s estimate rows, too narrow a terminal puts each label and its pace
+on a line above the cells. `sweep_prose`, `unsettled_note` and
+`ESTIMATE_PROSE` are shared with `--fifo`, so a wording change there shows up
+in both. (The older random-order `--summarize` table, with 50%/100% times and
+a best guess, was removed on 2026-11-20.)
 
 Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
 stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
@@ -158,8 +207,11 @@ python3 backtest.py --from 2026-07  # only cutoffs after the early-2026 pace set
 [test_backtest.py](test_backtest.py)) cuts the history off at each period
 from `SIZE_FROM`, predicts each settled cohort's own share cleared 1-6 months
 on, and compares that with what the history went on to show. Models: the
-sweep at each of `SHARES`, the cohort's own recent rate carried forward, and
-random order. On the full range every sweep model is badly over-optimistic,
+sweep at each of `SHARES` (one shared pace per cutoff, `Case.pace`), the
+cohort's own recent rate carried forward, and random order (the cohort's own
+people-ahead drop, `ahead_pace`). From 2026-07 on the 50% sweep's mean
+error is 3.8% (4.2% with the old per-cohort paces, a median trickle and
+unthinned arrival). On the full range every sweep model is badly over-optimistic,
 because the recent pace at the early cutoffs still held the fast early-2026
 months; from 2026-07 on they're within a few points of the actual figures.
 The pace, not the leftover share, is what moves the error. Re-run it when
