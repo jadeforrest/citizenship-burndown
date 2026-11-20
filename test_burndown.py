@@ -795,143 +795,7 @@ class MainWithHistory(unittest.TestCase):
 ANSI = re.compile(r"\033\[[0-9;]*m")
 
 
-def run_summary(cohorts: dict, width: int = WIDE) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        b.print_summary(cohorts, width)
-    return buf.getvalue()
-
-
-class Summary(unittest.TestCase):
-    COHORTS = {
-        "2024-12": [("2026-02", 900.0), ("2026-01", 1000.0)],   # before 2025-01
-        **JULY_COHORTS,
-        "2025-09": [("2026-10", 14000.0)],                      # one month only
-        "2026-01": [("2026-10", 500.0), ("2026-09", 500.0)],    # stalled
-    }
-
-    def test_rows_from_2025_01_to_the_newest_cohort(self):
-        rows = b.summary_rows(self.COHORTS)
-        self.assertEqual([r[0] for r in rows],
-                         ["2025-07", "2025-08", "2025-09", "2026-01"])
-        cohort, current, cleared, recent, median = rows[0]
-        self.assertEqual((current, cleared, recent, median), (9300, 0, 300, 400))
-        self.assertEqual([r[2] for r in rows], [0, None, None, None])
-        # One month of data: people ahead, but no pace to clear them at yet.
-        self.assertEqual(rows[2], ("2025-09", 14000, None, None, None))
-        self.assertEqual([r[0] for r in b.summary_rows(self.COHORTS, "2025-08")],
-                         ["2025-08", "2025-09", "2026-01"])
-        self.assertEqual(b.summary_rows({"2025-07": []}), [])
-
-    def test_matches_the_full_analysis(self):
-        # Same Recent/Median rows analyze() prints for 2025-07: 15.5 / 31.0
-        # months at the 3-month pace, 11.6 / 23.2 at the median.
-        out = run_summary(self.COHORTS)
-        row = [ln.split() for ln in out.splitlines() if ln.startswith("  2025-07")]
-        self.assertEqual(row, [["2025-07", "9,300", "0", "300", "15.5", "31.0",
-                                "400", "11.6", "23.2", "13.6-27.1m"]])
-        full = run_analyze(JULY_ENTERED)
-        recent_row = next(ln for ln in full.splitlines() if "Recent (3 mo pace)" in ln)
-        median_row = next(ln for ln in full.splitlines() if ln.strip().startswith("Median "))
-        for months in ("15.5 mo", "31.0 mo"):
-            self.assertIn(months, recent_row)
-        for months in ("11.6 mo", "23.2 mo"):
-            self.assertIn(months, median_row)
-
-    def test_recent_pace(self):
-        self.assertEqual(b.recent_pace([100.0, 500, 100, 400, 400]), (300, 3))
-        # Fewer months than RECENT_MONTHS: average what there is.
-        self.assertEqual(b.recent_pace([100.0, 500]), (300, 2))
-        self.assertEqual(b.recent_pace([-200.0]), (-200, 1))
-
-    def test_pace_labels_sit_over_their_columns(self):
-        lines = run_summary(self.COHORTS).splitlines()
-        at = next(i for i, ln in enumerate(lines) if ln.startswith("  cohort"))
-        labels, heads = lines[at - 1], lines[at]
-        groups = [m.start() for m in re.finditer("pace/mo", heads)]
-        spans = [(groups[0], groups[1] - 3), (groups[1], heads.rindex("100%") + 4)]
-        for name, (start, end) in zip(b.SUMMARY_PACES, spans):
-            middle = labels.index(name) + len(name) / 2
-            self.assertLessEqual(abs(middle - (start + end) / 2), 1, name)
-
-    def test_stalled_cohort_never_clears(self):
-        out = run_summary(self.COHORTS)
-        row = [ln.split() for ln in out.splitlines() if ln.startswith("  2026-01")]
-        self.assertEqual(row[0][1:], ["500", "n/a", "0", "never", "never",
-                                      "0", "never", "never", "never"])
-
-    def test_stacked_when_the_table_wont_fit(self):
-        out = run_summary(self.COHORTS, STACKED)
-        lines = out.splitlines()
-        at = lines.index("  2025-07  9,300 ahead, 0 cleared")
-        self.assertEqual(lines[at + 1].split(), ["recent", "300", "15.5", "31.0"])
-        self.assertEqual(lines[at + 2].split(), ["median", "400", "11.6", "23.2"])
-        self.assertEqual(lines[at + 3].split(), ["best", "13.6-27.1m"])
-        self.assertIn("  2025-08  11,500 ahead, n/a cleared", lines)
-        at = lines.index("  2025-09  14,000 ahead, n/a cleared")
-        self.assertEqual(lines[at + 1].split(), ["recent", "n/a", "n/a", "n/a"])
-
-    def test_fits_and_strips_cleanly_at_every_width(self):
-        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
-            with self.subTest(width=width):
-                out = run_summary(self.COHORTS, width)
-                self.assertLessEqual(max(map(len, out.splitlines())), width)
-                self.assertFalse([ln for ln in out.splitlines() if ln != ln.rstrip()])
-                with unittest.mock.patch.object(b, "COLOR", True):
-                    colored = run_summary(self.COHORTS, width)
-                self.assertEqual(ANSI.sub("", colored), out)
-                for figure in ("300", "31.0", "400", "23.2", "never", "n/a",
-                               "pace/mo", "13.6-27.1m"):
-                    self.assertIn(figure, out)
-
-    def test_default_cohort_and_never_are_painted(self):
-        with unittest.mock.patch.object(b, "COLOR", True):
-            out = run_summary(self.COHORTS)
-        july = next(ln for ln in out.splitlines() if "2025-07" in ln)
-        self.assertTrue(july.startswith("\033[1m"))
-        self.assertRegex(out, "\033\\[31m *never")
-        stalled = next(ln for ln in out.splitlines() if "2026-01" in ln)
-        self.assertTrue(stalled.endswith("   \033[31m     never\033[0m"), stalled)
-
-    def test_own_last_month(self):
-        self.assertEqual(b.own_last_month(JULY_COHORTS, "2025-07"), 0)
-        # Give 2025-08 a 2025-09 behind it: 2025-08's own still-waiting count
-        # goes 14,400-11,900 = 2,500 in September to 13,900-11,500 = 2,400.
-        cohorts = {**JULY_COHORTS, "2025-09": [("2026-10", 13900.0),
-                                               ("2026-09", 14400.0),
-                                               ("2026-08", 14200.0)]}
-        self.assertEqual(b.own_last_month(cohorts, "2025-08"),
-                         (14400 - 11900) - (13900 - 11500))
-
-    def test_own_last_month_needs_the_latest_two_months(self):
-        july = JULY_COHORTS["2025-07"]
-        cases = {
-            "no next cohort": {"2025-07": july},
-            "next lacks the latest month": {"2025-07": july, "2025-08": [
-                (p, n) for p, n in JULY_COHORTS["2025-08"] if p != "2026-10"]},
-            "next lacks the month before": {"2025-07": july, "2025-08": [
-                (p, n) for p, n in JULY_COHORTS["2025-08"] if p != "2026-09"]},
-        }
-        for name, cohorts in cases.items():
-            self.assertIsNone(b.own_last_month(cohorts, "2025-07"), name)
-
-    def test_negative_cleared_is_shown(self):
-        # The count grew (rounding, or IRCC revising): show it, don't hide it.
-        cohorts = {"2025-07": JULY_COHORTS["2025-07"],
-                   "2025-08": [("2026-10", 11600.0), ("2026-09", 11900.0)]}
-        row = b.summary_rows(cohorts)[0]
-        self.assertEqual(row[2], (11900 - 9700) - (11600 - 9300))
-        self.assertIn(" -100 ", run_summary(cohorts))
-
-    def test_nothing_to_summarize(self):
-        out = run_summary({"2024-06": JULY_COHORTS["2025-07"]})
-        self.assertIn("No cohort from 2025-01 on in", out)
-
-    def test_gaps_are_flagged(self):
-        out = run_summary({"2025-03": [("2026-09", 900.0), ("2026-07", 1000.0)]})
-        self.assertIn("Months missing for 2025-03", out)
-        self.assertNotIn("Months missing", run_summary(self.COHORTS))
-
+class Cells(unittest.TestCase):
     def test_time_to_clear(self):
         self.assertEqual(b.time_to_clear(9300, 722, 0.5), 9300 * 0.5 / 722)
         # Any positive pace clears eventually, however slow; none never does.
@@ -954,136 +818,21 @@ class Summary(unittest.TestCase):
         self.assertEqual(b.fmt_months_short(1234567), "1e+06")
         self.assertEqual(b.fmt_months_short(float("inf")), "never")
 
-    # The tests below pin the summary's exact text and widths; they were added
-    # to kill the mutants (text, alignment, padding) the looser ones let by.
-    def test_table_text(self):
-        self.assertEqual(run_summary(self.COHORTS), """
-============================================================
-COHORT SUMMARY
-============================================================
-Months until 50% and 100% of the people ahead of each cohort from 2025-01 have
-cleared, at its recent pace (the average of its last 3 months) and its median
-monthly pace. Cleared is how many of the cohort's own applicants were
-processed last month (the gap to the next cohort, so rounded to the nearest
-100; n/a without it). Best guess averages the two paces' times to 50% and to
-100%, as a range. A cohort with one month of data has no pace yet.
-
-                                 recent (3 mo)              median
-  cohort    ahead  cleared   pace/mo    50%   100%   pace/mo    50%   100%   best guess
-  2025-07   9,300        0       300   15.5   31.0       400   11.6   23.2   13.6-27.1m
-  2025-08  11,500      n/a       300   19.2   38.3       500   11.5   23.0   15.3-30.7m
-  2025-09  14,000      n/a       n/a    n/a    n/a       n/a    n/a    n/a          n/a
-  2026-01     500      n/a         0  never  never         0  never  never        never
-""" + "=" * WIDE + "\n\n")
-
-    def test_stacked_text(self):
-        out = run_summary(self.COHORTS, STACKED)
-        self.assertEqual(out[out.index("\n\n") + 2:], """\
-            pace/mo    50%   100%
-  2025-07  9,300 ahead, 0 cleared
-    recent      300   15.5   31.0
-    median      400   11.6   23.2
-    best               13.6-27.1m
-  2025-08  11,500 ahead, n/a cleared
-    recent      300   19.2   38.3
-    median      500   11.5   23.0
-    best               15.3-30.7m
-  2025-09  14,000 ahead, n/a cleared
-    recent      n/a    n/a    n/a
-    median      n/a    n/a    n/a
-    best                      n/a
-  2026-01  500 ahead, n/a cleared
-    recent        0  never  never
-    median        0  never  never
-    best                    never
-""" + "=" * STACKED + "\n\n")
-
-    def test_stacked_cohort_line_wraps_under_itself(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            b.print_summary_stacked(
-                [("2025-07", "999,999", "999,999", ("1", "2", "3"), ("4", "5", "6"),
-                  "2-5m")],
-                b.SummaryWidths(7, 5), STACKED)
-        self.assertEqual(buf.getvalue().splitlines()[1:3],
-                         ["  2025-07  999,999 ahead, 999,999", "    cleared"])
-
-    def test_gaps_and_nothing_to_summarize_text(self):
-        gappy = {"2025-03": [("2026-09", 900.0), ("2026-07", 1000.0)],
-                 "2025-04": [("2026-09", 800.0), ("2026-06", 900.0)]}
-        out = run_summary(gappy, 60)
-        self.assertEqual(out[out.index("\n\n⚠"):], """
-
-⚠  Months missing for 2025-03, 2025-04: their rates treat
-    the recorded months as consecutive.
-""" + "=" * 60 + "\n\n")
-        self.assertEqual(run_summary({}, 60), """
-============================================================
-COHORT SUMMARY
-============================================================
-No cohort from 2025-01 on in flpt_history.csv yet.
-""")
-        with unittest.mock.patch.object(b, "COLOR", True):
-            self.assertIn("\033[33m⚠  Months missing", run_summary(gappy, 60))
-
-    def test_table_width_is_what_it_renders(self):
-        cells, w = b.summary_layout(b.summary_rows(self.COHORTS))
-        lines = run_summary(self.COHORTS).splitlines()
-        table = lines[lines.index(next(ln for ln in lines if ln.startswith("  cohort"))):-2]
-        self.assertEqual({len(ln) for ln in table}, {w.table()})
-        # ...and the table is used down to exactly that width.
-        self.assertIn("  cohort", run_summary(self.COHORTS, w.table()))
-        self.assertNotIn("  cohort", run_summary(self.COHORTS, w.table() - 1))
-
-    def test_layout_widths(self):
-        def widths(current, recent, median):
-            return b.summary_layout([("2025-07", current, None, recent, median)])[1]
-        # Floors: the "ahead" heading and "never" (wider than "100%").
-        self.assertEqual(widths(500.0, 500.0, 250.0), b.SummaryWidths(5, 5))
-        # The pace cell has its own column; it doesn't widen the time cells.
-        self.assertEqual(widths(1000.0, 999999.0, 999999.0), b.SummaryWidths(5, 5))
-        # The 50% time can be the wider one: "617,284" beside "1e+06".
-        self.assertEqual(widths(1234567.0, 1.0, 1.0), b.SummaryWidths(5, 7, 14))
-        # The best-guess column floors at its heading, "best guess".
-        self.assertEqual(widths(500.0, 500.0, 250.0).best, len("best guess"))
-
-    def test_best_guess(self):
-        # The recent and median times at each end, averaged: for 2025-07,
-        # (15.5 + 11.6) / 2 to (31.0 + 23.2) / 2.
-        self.assertEqual(b.best_guess(9300, 300, 400), "13.6-27.1m")
-        self.assertEqual(b.best_guess(1000, 100, 100), "5.0-10.0m")
-        # Either pace that never clears, or isn't known, decides the cell.
-        for recent, median in ((0, 400), (300, -5)):
-            self.assertEqual(b.best_guess(9300, recent, median), "never")
-        for recent, median in ((None, 400), (300, None), (None, None)):
-            self.assertEqual(b.best_guess(9300, recent, median), "n/a")
-        # Each end degrades like any other summary month cell.
-        self.assertEqual(b.best_guess(1e300, 1, 1), "5e+299-1e+300m")
-
-    def test_best_guess_heading_sits_over_a_wider_range(self):
-        cells, w = b.summary_layout([("2025-07", 1234567.0, None, 1.0, 1.0)])
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            b.print_summary_table(cells, w)
-        heads, row = buf.getvalue().splitlines()[1:]
-        self.assertTrue(heads.endswith("       best guess"), heads)
-        self.assertTrue(row.endswith("   617,284-1e+06m"), row)
-        self.assertEqual(len(heads), len(row))
-
 
 class MainSummarize(unittest.TestCase):
     def test_summarizes_without_prompting(self):
         with tempfile.TemporaryDirectory() as d, \
                 unittest.mock.patch("builtins.input") as typed:
             body = "".join(f"{p},{c},{n:.0f}\n"
-                           for c, series in JULY_COHORTS.items() for p, n in series)
+                           for c, series in FIFO_COHORTS.items() for p, n in series)
             out = run_main("", write_history(d, body + "Sept,2025-07,1\n"),
                            ("--summarize",))
-        self.assertIn("COHORT SUMMARY", out)
-        self.assertIn("2025-08", out)
+        self.assertIn("WHEN EACH COHORT IS PROCESSED", out)
+        self.assertIn("  2025-07 ", out)
         self.assertIn("Skipped unreadable rows", out)
         self.assertNotIn("BURN-DOWN ANALYSIS", out)
-        self.assertNotIn("Pick a cohort", out)
+        self.assertNotIn("PROCESSING ORDER", out)
+        typed.assert_not_called()
 
     def test_help_describes_the_flag(self):
         with contextlib.redirect_stdout(io.StringIO()) as buf, \
@@ -1092,8 +841,9 @@ class MainSummarize(unittest.TestCase):
         text = " ".join(buf.getvalue().split())
         self.assertRegex(text, r"(^| )Estimate how long the queue ahead of you "
                                r"will take to clear\.( |$)")
-        self.assertIn("--summarize no prompt: recent and median times to 50% and "
-                      "100% for every cohort from 2025-01 in flpt_history.csv",
+        self.assertIn("--summarize no prompt: when each settled cohort from "
+                      "2025-01 in flpt_history.csv is likely to be processed, at "
+                      "its recent pace (with --fifo COHORT, that row is bold)",
                       text)
 
     def test_unknown_flag_is_rejected(self):
@@ -1132,6 +882,9 @@ class Fifo(unittest.TestCase):
         self.assertEqual(b.settled_cohorts(FIFO_COHORTS, "2025-06"),
                          ["2025-06", "2025-07"])
         self.assertEqual(b.settled_cohorts({}), [])
+        self.assertEqual(b.settled_cohorts({"2025-07": []}), [])
+        self.assertEqual(b.latest_period({"2025-06": [], "2025-07": [("2026-10", 1.0)]}),
+                         "2026-10")
         # Exactly FIFO_SETTLED months before the latest period counts; one
         # month newer doesn't.
         late = {"2025-10": [("2026-10", 5.0)], "2025-11": [("2026-10", 9.0)],
@@ -1206,27 +959,74 @@ class Fifo(unittest.TestCase):
 
     def test_sweep_chance(self):
         # Background alone compounds.
-        self.assertAlmostEqual(b.sweep_chance(10, 0.02, 9300, 2200, 0),
-                               1 - 0.98 ** 10)
-        self.assertEqual(b.sweep_chance(0, 0.02, 9300, 2200, 300), 0)
-        # Sweep alone: arrives after 7,000 * 0.7 / 700 = 7 months, then 700 a
-        # month of 1,400 waiting, capped once STRAGGLERS are left.
-        for months, chance in ((7, 0), (8, 0.5), (8.5, 0.7), (100, 0.7)):
-            self.assertAlmostEqual(b.sweep_chance(months, 0, 7000, 1400, 700),
+        far = b.Position(9300, 2200, 1540)
+        self.assertAlmostEqual(b.sweep_chance(10, 0.02, far, 0), 1 - 0.98 ** 10)
+        self.assertEqual(b.sweep_chance(0, 0.02, far, 300), 0)
+        # Sweep alone: arrives after 4,900 / 700 = 7 months, then 700 a month
+        # of 1,400 waiting, capped once it has taken 980.
+        pos = b.Position(4900, 1400, 980)
+        for months, chance in ((7, 0), (8, 0.5), (8.4, 0.7), (100, 0.7)):
+            self.assertAlmostEqual(b.sweep_chance(months, 0, pos, 700),
                                    chance, msg=months)
         # A shrinking queue's negative background is no help, and no harm.
-        self.assertEqual(b.sweep_chance(12, -0.05, 7000, 1400, 0), 0)
-        self.assertEqual(b.sweep_chance(12, 0, 7000, 0, 700), 0)
-        self.assertAlmostEqual(b.sweep_chance(1, 0, -5, 700, 700), 0.7)
+        self.assertEqual(b.sweep_chance(12, -0.05, pos, 0), 0)
+        self.assertEqual(b.sweep_chance(12, 0, b.Position(4900, 0, 0), 700), 0)
+        self.assertAlmostEqual(b.sweep_chance(1, 0, b.Position(-5, 700, 490), 700),
+                               0.7)
+        # A cohort the sweep has passed gets nothing from it; a take beyond
+        # what's waiting, or below nothing, is held to the cohort.
+        self.assertEqual(b.sweep_chance(50, 0, b.Position(0, 700, 0), 700), 0)
+        self.assertEqual(b.sweep_chance(50, 0, b.Position(0, 700, -5), 700), 0)
+        self.assertEqual(b.sweep_chance(50, 0, b.Position(0, 700, 9000), 700), 1)
 
     def test_months_to_chance(self):
-        self.assertAlmostEqual(b.months_to_chance(0.5, 0, 7000, 1400, 700), 8)
-        self.assertAlmostEqual(b.months_to_chance(0.5, 0.02, 0, 0, 0),
+        pos = b.Position(4900, 1400, 980)
+        self.assertAlmostEqual(b.months_to_chance(0.5, 0, pos, 700), 8)
+        self.assertAlmostEqual(b.months_to_chance(0.5, 0.02, b.Position(0, 0, 0), 0),
                                math.log(0.5) / math.log(0.98))
-        self.assertEqual(b.months_to_chance(0.75, 0, 7000, 1400, 700),
-                         float("inf"))
-        self.assertEqual(b.months_to_chance(0.5, 0, 7000, 1400, 0), float("inf"))
-        self.assertAlmostEqual(b.months_to_chance(0, 0, 7000, 1400, 0), 0)
+        self.assertEqual(b.months_to_chance(0.75, 0, pos, 700), float("inf"))
+        self.assertEqual(b.months_to_chance(0.5, 0, pos, 0), float("inf"))
+        self.assertAlmostEqual(b.months_to_chance(0, 0, pos, 0), 0)
+
+    def test_cohort_size_and_sweep_left(self):
+        waiting = {"2026-01": 14100.0, "2026-02": 9000.0, "2026-03": 4200.0,
+                   "2026-04": 2900.0, "2026-11": 2400.0}
+        # Only from SIZE_FROM on: the C-3 months before it don't count.
+        self.assertEqual(b.cohort_size(waiting), 4200)
+        self.assertEqual(b.sweep_left(waiting, "2026-11"),
+                         2400 - b.STRAGGLERS * 4200)
+        self.assertEqual(b.sweep_left(waiting, "2026-11", 0.3), 2400 - 0.3 * 4200)
+        self.assertEqual(b.sweep_left(waiting, "2026-11", 0.0), 2400)
+        self.assertEqual(b.cohort_size({"2026-02": 5.0}), None)
+        self.assertEqual(b.sweep_left({"2026-02": 5.0}, "2026-02"), 0)
+        self.assertEqual(b.sweep_left(waiting, "2026-12"), 0)
+        # Already down to its stragglers: nothing left to sweep.
+        self.assertEqual(b.sweep_left({"2026-03": 2000.0, "2026-11": 500.0},
+                                      "2026-11", 0.3), 0)
+        # Exactly at the boundary month counts.
+        self.assertEqual(b.cohort_size({"2026-02": 9.0, b.SIZE_FROM: 3.0}), 3)
+
+    def test_position(self):
+        self.assertEqual(b.position(FIFO_COHORTS, "2025-05", "2026-10", 0.3),
+                         b.Position(0, 1500, 1500 - 0.3 * 1800))
+        # 2025-06 waits behind 2025-05's unswept 960; 2025-07 behind both.
+        self.assertEqual(b.position(FIFO_COHORTS, "2025-06", "2026-10", 0.3),
+                         b.Position(960, 1500, 1500 - 0.3 * 1900))
+        self.assertEqual(b.position(FIFO_COHORTS, "2025-07", "2026-10", 0.3),
+                         b.Position(960 + 930, 2200, 2200 - 0.3 * 2300))
+        # The default share is STRAGGLERS, for the work ahead and the take.
+        self.assertEqual(b.position(FIFO_COHORTS, "2025-07", "2026-10"),
+                         b.Position((1500 - 900) + (1500 - 950), 2200, 2200 - 1150))
+        self.assertIsNone(b.position(FIFO_COHORTS, "2025-08", "2026-10"))
+        self.assertIsNone(b.position(FIFO_COHORTS, "2025-07", "2026-11"))
+        # Before SUMMARY_FROM everyone is a straggler: no work, no take.
+        old = {"2024-11": [("2026-10", 100.0), ("2026-03", 400.0)],
+               "2024-12": [("2026-10", 600.0), ("2026-03", 900.0)],
+               "2025-01": [("2026-10", 1000.0), ("2026-03", 1500.0)]}
+        self.assertEqual(b.position(old, "2024-12", "2026-10"),
+                         b.Position(0, 400, 0))
+        self.assertEqual(b.position(old, "2024-11", "2026-10"),
+                         b.Position(0, 500, 0))
 
     def test_paces(self):
         self.assertEqual(b.best_pace([100.0, 500, 100, 400, 400]), 1000 / 3)
@@ -1234,7 +1034,19 @@ class Fifo(unittest.TestCase):
         self.assertEqual(b.best_pace([-200.0]), -200)
         self.assertEqual(b.fifo_paces(FIFO_COHORTS["2025-07"]), [
             ("no sweep", None), ("sweep, recent 3 mo", 300),
-            ("sweep, median", 400), ("sweep, best 3 mo", 4100 / 3)])
+            ("sweep, best 3 mo", 4100 / 3)])
+        # The trickle on the 9,300 ahead comes off every sweep pace.
+        self.assertEqual(b.fifo_paces(FIFO_COHORTS["2025-07"], 0.01), [
+            ("no sweep", None), ("sweep, recent 3 mo", 300 - 93),
+            ("sweep, best 3 mo", 4100 / 3 - 93)])
+        self.assertEqual(b.fifo_paces(FIFO_COHORTS["2025-07"], -0.5)[1][1], 300)
+
+    def test_leftover_percent(self):
+        cases = {(0, 100, 50): "50%", (0, 100, 0): "100%", (0, 100, 100): "0%",
+                 (0, 0, 0): "n/a", (0, 100, 150): "0%", (0, 100, -5): "100%"}
+        for (work, waiting, take), text in cases.items():
+            self.assertEqual(b.leftover_percent(b.Position(work, waiting, take)),
+                             text)
 
     def test_fits_and_strips_cleanly_at_every_width(self):
         for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
@@ -1245,7 +1057,7 @@ class Fifo(unittest.TestCase):
                 with unittest.mock.patch.object(b, "COLOR", True):
                     colored = run_fifo(FIFO_COHORTS, width)
                 self.assertEqual(ANSI.sub("", colored), out)
-                for figure in ("6,300", "0.7%", "0.76", "1,367", "36.2"):
+                for figure in ("6,300", "0.7%", "0.76", "1,088", "69.9", "1,150"):
                     self.assertIn(figure, out)
 
     def test_target_grew_and_never_are_painted(self):
@@ -1295,18 +1107,20 @@ When will 2025-07 be processed?
 25-75% is the months from now until your chance of having been processed is
 25% and 75%; 90% is the months until it's 90%. Two things clear files. A
 background trickle takes 3.0% of every cohort each month, old or new. An
-oldest-first sweep, at the row's pace, reaches a cohort once 70% of the people
-ahead of it are gone, clears 70% of the cohort's own files and moves on. If
-you're in the last 30%, the sweep has passed you and only the trickle is left,
-which is why 90% takes so much longer. For 2025-07: the sweep arrives once
-6,510 of the 9,300 ahead are gone, then clears 1,540 of its 2,200. 'No sweep'
-means the current lull continues.
+oldest-first sweep, at the row's pace (the drop in the people ahead, less what
+the trickle takes of them), works through each cohort until 50% of it is left
+and moves on. Those leftovers don't hold the sweep up again: it reaches a
+cohort once the unswept files ahead of it are cleared. If you're in the last
+50%, the sweep has passed you and only the trickle is left, which is why 90%
+takes so much longer. A cohort's size is its largest count from 2026-03 on,
+after the C-3 change settled. For 2025-07: of the 9,300 ahead, 1,150 are still
+to be swept, then the sweep clears 1,050 of its 2,200. 'No sweep' means the
+current lull continues.
 
                       pace/mo  25-75% time  90% time
   no sweep                  -    9.5-45.6m      75.8
-  sweep, recent 3 mo      300    9.5-25.1m      36.2
-  sweep, median           400    9.5-19.3m      36.2
-  sweep, best 3 mo      1,367     5.0-6.0m      36.2
+  sweep, recent 3 mo       22    9.5-45.6m      69.9
+  sweep, best 3 mo      1,088    1.5-24.3m      54.4
 """ + "=" * WIDE + "\n\n")
 
     def test_stacked_text(self):
@@ -1316,11 +1130,9 @@ means the current lull continues.
   no sweep
           -    9.5-45.6m      75.8
   sweep, recent 3 mo
-        300    9.5-25.1m      36.2
-  sweep, median
-        400    9.5-19.3m      36.2
+         22    9.5-45.6m      69.9
   sweep, best 3 mo
-      1,367     5.0-6.0m      36.2
+      1,088    1.5-24.3m      54.4
 """ + "=" * STACKED + "\n\n")
         self.assertIn("\n  cohort   waiting  last 3 mo  last 6 mo\n", out)
 
@@ -1405,31 +1217,32 @@ order score or estimate for it.
 
     def test_sweep_edges(self):
         # One a month through a cohort of one, starting now.
-        self.assertAlmostEqual(b.sweep_chance(1, 0, 0, 1, 1), 1 - b.STRAGGLERS)
-        self.assertAlmostEqual(b.sweep_chance(0.5, 0, -5, 1, 1), 0.5)
+        self.assertAlmostEqual(b.sweep_chance(1, 0, b.Position(0, 1, 0.7), 1), 0.7)
+        self.assertAlmostEqual(b.sweep_chance(0.5, 0, b.Position(-5, 1, 0.7), 1), 0.5)
         # A row without a sweep never gets one.
-        self.assertEqual(b.estimate_cells(0.0, 0.0, 1.0, None), ["never"] * 2)
+        self.assertEqual(b.estimate_cells(0.0, b.Position(0, 1, 0.7), None),
+                         ["never"] * 2)
         # ESTIMATE_CAP is where "never" starts: a 90% chance just inside it
         # is a figure, just past it isn't.
         for months, shown in ((1199.5, "1199.5"), (1200.5, "never")):
             background = 1 - 0.1 ** (1 / months)
-            self.assertEqual(b.estimate_cells(background, 0.0, 1.0, None)[1],
+            self.assertEqual(b.estimate_cells(background, b.Position(0, 1, 0.7),
+                                              None)[1],
                              shown, months)
 
     def test_estimate_range(self):
         # Both ends, only the top end, or neither end reached.
-        self.assertEqual(b.estimate_cells(0.02, 0.0, 0.0, None),
+        pos = b.Position(4900, 1400, 980)
+        self.assertEqual(b.estimate_cells(0.02, b.Position(0, 0, 0), None),
                          ["14.2-68.6m", "114.0"])
-        self.assertEqual(b.estimate_cells(0.0, 7000.0, 1400.0, 700.0),
-                         ["7.5-never", "never"])
-        self.assertEqual(b.estimate_cells(0.0, 7000.0, 1400.0, None),
-                         ["never", "never"])
+        self.assertEqual(b.estimate_cells(0.0, pos, 700.0), ["7.5-never", "never"])
+        self.assertEqual(b.estimate_cells(0.0, pos, None), ["never", "never"])
 
     def test_estimate_rows(self):
         def render(paces, width):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                b.print_estimates(paces, 0.0, 7000.0, 1400.0, width)
+                b.print_estimates(paces, 0.0, b.Position(4900, 1400, 980), width)
             return buf.getvalue()
         paces = [("no sweep", None), ("shrinking", 0.0), ("growing", -50.0),
                  ("sweep, recent 3 mo", 700.0)]
@@ -1496,61 +1309,66 @@ class FifoSummary(unittest.TestCase):
 ============================================================
 WHEN EACH COHORT IS PROCESSED
 ============================================================
-For each cohort from 2025-05: ahead is the people ahead of it and waiting its
-own applicants still waiting in 2026-10. % fifo is how oldest-first processing
+For each cohort from 2025-05, in 2026-10: ahead is the people ahead of it, to
+sweep the part of them the sweep still has to clear, and waiting its own
+applicants still waiting. Leftover % is the share of those waiting that the
+sweep is expected to leave behind for the trickle: if you're still waiting in
+that cohort, roughly your chance of being one of them. The higher it is, the
+more the 90% time is the one to go by. % fifo is how oldest-first processing
 was for it over the last 6 months: 0% means the files cleared were a random
-pick, 100% that every one was ahead of it. Pace is the files a month the sweep
-clears: the cohort's average over its last 3 months, or its median month.
-25-75% is the months from now until your chance of having been processed is
-25% and 75%; 90% is the months until it's 90%.
+pick, 100% that every one was ahead of it. Pace is the sweep's files a month
+over the last 3 months. 25-75% is the months from now until your chance of
+having been processed is 25% and 75%; 90% is the months until it's 90%.
 
 Two things clear files. A background trickle takes 3.0% of every cohort each
-month, old or new. An oldest-first sweep, at the row's pace, reaches a cohort
-once 70% of the people ahead of it are gone, clears 70% of the cohort's own
-files and moves on. If you're in the last 30%, the sweep has passed you and
-only the trickle is left, which is why 90% takes so much longer. Cohorts newer
-than 2025-07 are left out: applications dated to a month keep arriving for
-about a year, so their counts are still growing.
+month, old or new. An oldest-first sweep, at the row's pace (the drop in the
+people ahead, less what the trickle takes of them), works through each cohort
+until 50% of it is left and moves on. Those leftovers don't hold the sweep up
+again: it reaches a cohort once the unswept files ahead of it are cleared. If
+you're in the last 50%, the sweep has passed you and only the trickle is left,
+which is why 90% takes so much longer. A cohort's size is its largest count
+from 2026-03 on, after the C-3 change settled. Cohorts newer than 2025-07 are
+left out: applications dated to a month keep arriving for about a year, so
+their counts are still growing.
 
-                                         recent 3 mo               median
-  cohort   ahead  waiting  % fifo   pace     25-75%   90%   pace     25-75%   90%
-  2025-05  6,300    1,500     34%    233  9.5-22.2m  36.2    400  9.5-13.4m  36.2
-  2025-06  7,800    1,500     45%    267  9.5-23.2m  36.2    400  9.5-15.9m  36.2
-  2025-07  9,300    2,200     76%    300  9.5-25.1m  36.2    400  9.5-19.3m  36.2
+                                                               recent 3 mo
+  cohort   ahead  to sweep  waiting  leftover %  % fifo   pace     25-75%   90%
+  2025-05  6,300         0    1,500         60%     34%     45  4.6-28.8m  59.0
+  2025-06  7,800       600    1,500         63%     45%     33  9.5-32.7m  60.7
+  2025-07  9,300     1,150    2,200         52%     76%     22  9.5-45.6m  69.9
 """ + "=" * WIDE + "\n\n")
 
     def test_matches_the_fifo_report(self):
         # The same model and inputs: each cohort's rows are the --fifo rows.
         for target in ("2025-05", "2025-06", "2025-07"):
             fifo = run_fifo(FIFO_COHORTS, WIDE, target)
-            for label in ("sweep, recent 3 mo", "sweep, median"):
-                line = next(ln for ln in fifo.splitlines()
-                            if ln.startswith(f"  {label} "))
-                pace, span, tail = line.split()[-3:]
-                self.assertRegex(run_fifo_summary(FIFO_COHORTS),
-                                 f"\n  {target} .* {pace}  +{span}  +{tail}")
+            line = next(ln for ln in fifo.splitlines()
+                        if ln.startswith("  sweep, recent 3 mo "))
+            pace, span, tail = line.split()[-3:]
+            self.assertRegex(run_fifo_summary(FIFO_COHORTS),
+                             f"\n  {target} .* {pace}  +{span}  +{tail}")
 
     def test_stacked_text(self):
         out = run_fifo_summary(FIFO_COHORTS, STACKED)
         self.assertEqual(out[out.index("                 pace"):], """\
                  pace     25-75%   90%
-  2025-05  6,300 ahead, 1,500 waiting,
-    34% fifo
-    recent 3 mo   233  9.5-22.2m  36.2
-    median        400  9.5-13.4m  36.2
-  2025-06  7,800 ahead, 1,500 waiting,
-    45% fifo
-    recent 3 mo   267  9.5-23.2m  36.2
-    median        400  9.5-15.9m  36.2
-  2025-07  9,300 ahead, 2,200 waiting,
-    76% fifo
-    recent 3 mo   300  9.5-25.1m  36.2
-    median        400  9.5-19.3m  36.2
+  2025-05  6,300 ahead (0 to sweep),
+    1,500 waiting, 60% leftover, 34%
+    fifo
+    recent 3 mo    45  4.6-28.8m  59.0
+  2025-06  7,800 ahead (600 to sweep),
+    1,500 waiting, 63% leftover, 45%
+    fifo
+    recent 3 mo    33  9.5-32.7m  60.7
+  2025-07  9,300 ahead (1,150 to sweep),
+    2,200 waiting, 52% leftover, 76%
+    fifo
+    recent 3 mo    22  9.5-45.6m  69.9
 """ + "=" * STACKED + "\n\n")
 
     def test_table_down_to_exactly_its_width(self):
-        self.assertIn("  cohort   ahead", run_fifo_summary(FIFO_COHORTS, 81))
-        self.assertNotIn("  cohort   ahead", run_fifo_summary(FIFO_COHORTS, 80))
+        self.assertIn("  cohort   ahead", run_fifo_summary(FIFO_COHORTS, 79))
+        self.assertNotIn("  cohort   ahead", run_fifo_summary(FIFO_COHORTS, 78))
 
     def test_fits_and_strips_cleanly_at_every_width(self):
         for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
@@ -1592,15 +1410,16 @@ flpt_history.csv yet.
                       run_fifo_summary(none))
 
     def test_stacked_breaks_wide_rows(self):
-        row = b.FifoSummaryRow("2025-07", "9,300", "2,200", "76%",
+        row = b.FifoSummaryRow("2025-07", "9,300", "1,890", "2,200", "31%", "76%",
                                [("recent 3 mo", ["1,367", "1199.5-1199.9m", "1199.9"])])
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             b.print_fifo_summary_stacked([row], [5, 14, 6], 40)
         self.assertEqual(buf.getvalue(), """\
        pace          25-75%     90%
-  2025-07  9,300 ahead, 2,200 waiting,
-    76% fifo
+  2025-07  9,300 ahead (1,890 to sweep),
+    2,200 waiting, 31% leftover, 76%
+    fifo
     recent 3 mo
       1,367  1199.5-1199.9m  1199.9
 """)
@@ -1615,8 +1434,7 @@ flpt_history.csv yet.
         rows = b.fifo_summary_rows(FLAT_COHORTS, ["2025-05", "2025-06", "2025-07"],
                                    "2026-10", 0.0)
         self.assertEqual([r.fifo for r in rows], ["n/a"] * 3)
-        self.assertEqual(rows[0].paces, [("recent 3 mo", ["0", "never", "never"]),
-                                         ("median", ["0", "never", "never"])])
+        self.assertEqual(rows[0].paces, [("recent 3 mo", ["0", "never", "never"])])
 
 
 class MainFifo(unittest.TestCase):
@@ -1656,8 +1474,7 @@ class MainFifo(unittest.TestCase):
             b.parse_args(["--help"])
         self.assertIn("--fifo [COHORT] no prompt: how close to oldest-first "
                       "processing is, and when COHORT (default 2025-07) is "
-                      "likely to be processed; with --summarize, the same "
-                      "estimates for every settled cohort",
+                      "likely to be processed",
                       " ".join(buf.getvalue().split()))
 
 
@@ -1824,8 +1641,8 @@ class FuzzPipeline(unittest.TestCase):
                         self.assertTrue(rate is None or rate <= 1.0)
 
     def test_summary_never_breaks(self):
-        # Every cohort from the history, however odd its counts, gets a row
-        # that fits the terminal; nothing raises or leaks a NaN.
+        # Every settled cohort with a latest figure, however odd its counts,
+        # gets a row that fits the terminal; nothing raises or leaks a NaN.
         rng = random.Random(20261017)
         for i in range(self.CASES):
             cohorts = {}
@@ -1840,13 +1657,15 @@ class FuzzPipeline(unittest.TestCase):
                      if rng.random() < 0.9), reverse=True)
             width = rng.randint(b.MIN_WIDTH, b.MAX_WIDTH)
             with self.subTest(case=i, cohorts=cohorts, width=width):
-                out = run_summary(cohorts, width)
-                self.assertIn("COHORT SUMMARY", out)
+                out = run_fifo_summary(cohorts, width)
+                self.assertIn("WHEN EACH COHORT IS PROCESSED", out)
                 self.assertNotIn("nan", out.lower())
                 self.assertNotIn("inf", out.lower())
                 self.assertLessEqual(max(map(len, out.splitlines())), width)
-                for row in b.summary_rows(cohorts):
-                    self.assertIn(row[0], out)
+                last = b.latest_period(cohorts) if any(cohorts.values()) else None
+                for cohort in b.settled_cohorts(cohorts):
+                    if b.position(cohorts, cohort, last):
+                        self.assertIn(f"  {cohort} ", out)
 
     def test_shrink_rate_compounds_back_to_the_end_count(self):
         # Applying the rate for `months` months has to land on `end` again.
@@ -1969,8 +1788,10 @@ class FuzzFifo(unittest.TestCase):
     def test_chance_is_a_rising_probability(self):
         rng = random.Random(20261024)
         for i in range(self.CASES):
-            args = (rng.uniform(-0.1, 0.2), rng.uniform(-1000, 60000),
-                    rng.uniform(-100, 5000), rng.uniform(-500, 3000))
+            args = (rng.uniform(-0.1, 0.2),
+                    b.Position(rng.uniform(-1000, 60000), rng.uniform(-100, 5000),
+                               rng.uniform(-500, 6000)),
+                    rng.uniform(-500, 3000))
             months = sorted(rng.uniform(0, 300) for _ in range(5))
             with self.subTest(case=i, args=args, months=months):
                 chances = [b.sweep_chance(m, *args) for m in months]
@@ -1981,8 +1802,10 @@ class FuzzFifo(unittest.TestCase):
     def test_months_to_chance_inverts_sweep_chance(self):
         rng = random.Random(20261025)
         for i in range(self.CASES):
+            waiting = rng.uniform(1, 5000)
             args = (rng.choice([0.0, rng.uniform(0.001, 0.2)]),
-                    rng.uniform(0, 60000), rng.uniform(1, 5000),
+                    b.Position(rng.uniform(0, 60000), waiting,
+                               rng.uniform(0, waiting)),
                     rng.choice([0.0, rng.uniform(1, 3000)]))
             q = rng.choice(b.ESTIMATE_ODDS)
             with self.subTest(case=i, args=args, q=q):

@@ -15,9 +15,9 @@ if [ ! -x .venv/bin/python ] || ! cmp -s requirements-dev.txt .venv/requirements
 fi
 
 export PYTHONDONTWRITEBYTECODE=1
-.venv/bin/coverage run --branch -m unittest test_burndown test_flpt_watch test_crap
-.venv/bin/coverage report --include=burndown.py,flpt_watch.py,crap.py --skip-covered --show-missing
-.venv/bin/coverage json -q -o coverage.json --include=burndown.py,flpt_watch.py,crap.py
+.venv/bin/coverage run --branch -m unittest test_burndown test_flpt_watch test_crap test_backtest
+.venv/bin/coverage report --include=burndown.py,flpt_watch.py,crap.py,backtest.py --skip-covered --show-missing
+.venv/bin/coverage json -q -o coverage.json --include=burndown.py,flpt_watch.py,crap.py,backtest.py
 .venv/bin/python crap.py coverage.json --ref "$ref" ${CRAP_ALL:+--all}
 
 if command -v npx >/dev/null; then

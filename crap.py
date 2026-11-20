@@ -19,7 +19,7 @@ from typing import NamedTuple
 import lizard
 
 THRESHOLD = 12.0
-SOURCES = ("burndown.py", "flpt_watch.py", "crap.py")
+SOURCES = ("burndown.py", "flpt_watch.py", "crap.py", "backtest.py")
 
 
 def changed_lines(ref: str, path: str) -> set[int]:

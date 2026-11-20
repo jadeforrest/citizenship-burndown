@@ -11,7 +11,7 @@ proof-of-citizenship processing times:
   backlog will take to clear. The user pastes a comma-separated list of
   monthly backlog counts (newest first, oldest last); the script infers the
   monthly processing rate and prints low/likely/high time-remaining estimates.
-  `--summarize` and `--fifo` skip the prompt for a per-cohort summary and a
+  `--summarize` and `--fifo` skip the prompt for per-cohort estimates and a
   processing-order report (both described under Running).
 - [flpt_watch.py](flpt_watch.py) — polls IRCC's published processing-times
   feed hourly, tracks the `citizen-proofs-2025/07` people-ahead figure and
@@ -54,21 +54,6 @@ changes. Prose wraps at `PROSE_WIDTH` (78) even on wider terminals.
 BURNDOWN_WIDTH=50 python3 burndown.py   # check the narrow layouts
 ```
 
-`python3 burndown.py --summarize` skips the prompt and prints one row per
-cohort from `SUMMARY_FROM` (2025-01) through the newest in the history: people
-ahead now; "cleared", how many of the cohort's own applicants were processed
-in its latest month (`own_last_month`: the drop in `own_cohort`'s
-still-waiting count, `n/a` unless the next cohort has that month and the one
-before); then the Recent (`recent_pace`, last `RECENT_MONTHS`) and Median paces
-with the months to 50% and 100% cleared — the same figures as those rows of
-the full report — and a "best guess" (`best_guess`): the recent and median
-times to 50% averaged, and likewise to 100%, shown as a range like
-`13.6-27.1m` (`never` if either pace never clears). A cohort with only one month (normally the newest) shows its
-people ahead with every pace cell `n/a`. Units live in the headings (`pace/mo`,
-months) so the table fits 80 columns; below its width it stacks into a block per cohort. Cells go
-through `fmt_count` / `fmt_months_short`, which never exceed `SUMMARY_CELL`
-characters, so only the ahead and month columns size themselves to the data.
-
 `python3 burndown.py --fifo [COHORT]` (default `DEFAULT_COHORT`; `2025/7`
 style is normalised by `cohort_arg`) skips the prompt and asks how close to
 oldest-first the processing is. Only *settled* cohorts are compared
@@ -88,21 +73,43 @@ keeps swinging newer cohorts' own counts by thousands). It prints:
   `ESTIMATE_ODDS` — the first two shown as one range cell (`14.7-70.6m`,
   `5.3-never`, `never`), the last on its own, under `ESTIMATE_HEADS` —
   from `sweep_chance`: the background rate compounding, plus
-  an oldest-first sweep at the row's pace (none, recent, median, best
-  `RECENT_MONTHS` window) that reaches COHORT once all but `STRAGGLERS` (30%)
-  of the people ahead are gone and then drains COHORT to the same residue.
-  `months_to_chance` bisects it (it only rises), `inf` past `ESTIMATE_CAP`.
-  `STRAGGLERS` is a judgement from the 2026 sweep, not fitted.
+  an oldest-first sweep at the row's pace (none, recent, best
+  `RECENT_MONTHS` window; median was dropped with the old summary). Paces
+  (`fifo_paces(series, background)`) are the people-ahead drop less
+  background × people ahead, since `sweep_chance` already applies the
+  trickle; the `pace/mo` column shows that net figure. The sweep works from COHORT's `Position`
+  (`position`): `work`, the files it still has to clear ahead of COHORT, then
+  `take` of COHORT's own `waiting`. Both come from `sweep_left`: a cohort's
+  current own count minus the `STRAGGLERS` (50%) share of its size it leaves
+  behind, floored at 0, so leftovers the sweep already passed don't hold it
+  up again. Size (`cohort_size`) is the largest own count from `SIZE_FROM`
+  (2026-03) on: the C-3 change in December 2025 makes earlier counts jump
+  (see the 2025-11 note under `SIZE_FROM`). Everyone before `SUMMARY_FROM` is
+  taken as already passed (the early-2026 sweep took that tail from 5,800 to
+  about 1,500). `months_to_chance` bisects the chance (it only rises), `inf`
+  past `ESTIMATE_CAP`. `STRAGGLERS` was a hand-picked 30% until
+  [backtest.py](backtest.py) (below) put 20-60% within about a point of each
+  other once the pace had settled, with 50% marginally best and matching the
+  50-55% that 2024-12 and 2025-01 were left at. `sweep_left` and `position`
+  take a `share` argument so the backtest can try others. Because `take`
+  varies by cohort, so does the 90% column.
 
-`--summarize --fifo [COHORT]` (either order) runs `print_fifo_summary`
-instead of either report: one row per settled cohort with people ahead, its
-own still waiting, "% fifo" (its `OrderScore` over the longest `OWN_WINDOWS`
-against itself and the newer settled cohorts, `fifo_percent`, clamped to
-±999%), and the same estimate cells as `--fifo` for the recent and median
-paces only (`FIFO_SUMMARY_PACES`). COHORT is just the bold row. The table is
-81 columns on today's data, so at 80 it stacks; at 40 a pace's cells drop to
-the line under its name. `sweep_prose`, `unsettled_note` and `ESTIMATE_PROSE`
-are shared with `--fifo`, so a wording change there shows up in both.
+`python3 burndown.py --summarize` skips the prompt and runs
+`print_fifo_summary`: the `--fifo` estimates for every settled cohort, one row
+each, with people ahead, "to sweep" (`Position.work`), its own still waiting,
+"leftover %" (`leftover_percent`: 1 − take / waiting, the share the sweep
+won't take, so roughly the chance a still-waiting applicant is a leftover;
+explained in the report's first paragraph), "% fifo" (its `OrderScore` over the longest `OWN_WINDOWS` against itself and
+the newer settled cohorts, `fifo_percent`, clamped to ±999%), and the estimate
+cells at the recent pace only (`FIFO_SUMMARY_PACES`). The recent pace is the
+only one shown because it backtested closest: from 2026-05 and 2026-08 cutoffs,
+median paces (which still hold the fast early-2026 months) over-predicted
+clearance badly. `--summarize --fifo COHORT` just bolds COHORT's row. The
+table is about 79 columns on today's data; narrower, it stacks a block per
+cohort, and at 40 a pace's cells drop under its name. `sweep_prose`,
+`unsettled_note` and `ESTIMATE_PROSE` are shared with `--fifo`, so a wording
+change there shows up in both. (The older random-order `--summarize` table,
+with 50%/100% times and a best guess, was removed on 2026-11-20.)
 
 Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
 stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
@@ -141,6 +148,22 @@ file REF doesn't have counts as wholly changed) and reads coverage from
 under `check.sh`. jscpd comes through `npx` (pinned in `check.sh`), configured
 by [.jscpd.json](.jscpd.json): `maxLines` is raised because jscpd silently
 skips files over 1,000 lines by default, which covers both big files here.
+
+```bash
+python3 backtest.py                 # score the models on every usable cutoff
+python3 backtest.py --from 2026-07  # only cutoffs after the early-2026 pace settled
+```
+
+[backtest.py](backtest.py) (stdlib, tested by
+[test_backtest.py](test_backtest.py)) cuts the history off at each period
+from `SIZE_FROM`, predicts each settled cohort's own share cleared 1-6 months
+on, and compares that with what the history went on to show. Models: the
+sweep at each of `SHARES`, the cohort's own recent rate carried forward, and
+random order. On the full range every sweep model is badly over-optimistic,
+because the recent pace at the early cutoffs still held the fast early-2026
+months; from 2026-07 on they're within a few points of the actual figures.
+The pace, not the leftover share, is what moves the error. Re-run it when
+more months arrive before changing `STRAGGLERS`.
 
 The `FuzzPipeline` and `FuzzFifo` cases run 300 random inputs by default so
 the suite stays a quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):
@@ -235,8 +258,9 @@ History and prompt handling, ahead of the analysis pipeline:
 - `color_enabled` / `paint` — see the colour notes above.
 - `main(argv=())` takes its arguments explicitly (`__main__` passes
   `sys.argv[1:]`) so the tests, which run under unittest's own argv, can call
-  it bare. `--summarize` goes to `summary_rows` → `print_summary` (which picks
-  `print_summary_table` or `print_summary_stacked`); `--fifo` goes to
+  it bare. `print_report` picks the report: `--summarize` (with or without
+  `--fifo`) goes to `print_fifo_summary`, which picks
+  `print_fifo_summary_table` or `print_fifo_summary_stacked`; `--fifo` goes to
   `print_fifo`, which prints `print_fifo_table`, `print_order` and
   `print_estimates` in turn.
 
