@@ -1987,7 +1987,8 @@ def widget_feed(cohorts: dict[str, list[tuple[str, float]]],
                 cohort: str = DEFAULT_COHORT) -> dict | None:
     """
     `cohort`'s --summarize estimates as the widget's JSON: a title, the period
-    they're from, and one row per WIDGET_FIELDS: its month (value) and how
+    they're from, and one row per WIDGET_FIELDS: its month as short_month()
+    (value) and how
     long from the period that is (detail, "" when it reads the same). None if it isn't settled or
     has no figure for the latest period.
     """
@@ -2000,9 +2001,17 @@ def widget_feed(cohorts: dict[str, list[tuple[str, float]]],
     if dates is None:
         return None
     return {"version": 2, "title": f"Citizenship {cohort}", "period": last,
-            "rows": [{"label": label, "value": dates[head],
+            "rows": [{"label": label, "value": short_month(dates[head]),
                       "detail": "" if lengths[head] == dates[head] else lengths[head]}
                      for head, label in WIDGET_FIELDS]}
+
+
+def short_month(text: str) -> str:
+    """A YYYY-MM month as the widget's M'YY (2028-01 -> 1'28); anything else as is."""
+    if not re.fullmatch(r"\d{4}-\d{2}", text):
+        return text
+    year, month = text.split("-")
+    return f"{int(month)}'{year[2:]}"
 
 
 def widget_cells(cohorts: dict[str, list[tuple[str, float]]], names: list[str],

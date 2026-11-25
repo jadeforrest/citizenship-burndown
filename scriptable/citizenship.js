@@ -3,7 +3,7 @@
 // Reads citizenship.json from Scriptable's iCloud folder, which flpt_watch.py
 // writes hourly (burndown.write_widget) once that folder exists: the 2025-07
 // cohort's --summarize estimates (sweep arrives, sweep done, done by
-// then, if left half by) at the last 3 months' rates: each as a month, with
+// then, if left half by) at the last 3 months' rates: each as a month (M'YY), with
 // how long from now that is in small text under it.
 //
 // Small, medium and lock-screen rectangular sizes.
@@ -20,22 +20,22 @@ async function load() {
   return JSON.parse(fm.readString(path));
 }
 
-function addText(stack, text, size, color, bold = false) {
+function addText(stack, text, size, color, bold = false, minScale = 0.6) {
   const t = stack.addText(text);
   t.font = bold ? Font.semiboldSystemFont(size) : Font.systemFont(size);
   t.textColor = color;
   t.lineLimit = 1;
-  t.minimumScaleFactor = 0.6;
+  t.minimumScaleFactor = minScale;
   return t;
 }
 
 // A one-line row of fixed height, so each kind of line (date, duration,
 // label) sits at the same height in every column even when its text shrinks.
-function line(stack, text, size, color, bold = false) {
+function line(stack, text, size, color, bold = false, minScale = 0.6) {
   const cell = stack.addStack();
   cell.size = new Size(0, Math.ceil(size * 1.25));
   cell.centerAlignContent();
-  addText(cell, text, size, color, bold);
+  addText(cell, text, size, color, bold, minScale);
 }
 
 function homeWidget(feed, family) {
@@ -46,13 +46,15 @@ function homeWidget(feed, family) {
   w.addSpacer();
   const row = w.addStack();
   row.topAlignContent();
-  const big = family === "small" ? 22 : 36;
+  // Values never shrink, so every column's (12'28, 64%) is the same size;
+  // this size fits five characters in a quarter of the widget.
+  const big = family === "small" ? 13 : 26;
   feed.rows.forEach((r, i) => {
     if (i > 0) row.addSpacer();
     const s = row.addStack();
     s.layoutVertically();
-    line(s, r.value, big, TEXT, true);
-    line(s, r.detail || " ", 10, DIM);
+    line(s, r.value, big, TEXT, true, 1);
+    line(s, r.detail || " ", 13, DIM);
     line(s, r.label, family === "small" ? 11 : 15, DIM);
   });
   w.refreshAfterDate = new Date(Date.now() + 6 * 3600e3);

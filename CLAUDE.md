@@ -336,11 +336,12 @@ launchctl bootout gui/$(id -u)/com.jade.flpt-watch; ~/Developer/ops/install-all.
 `burndown.write_widget` writes `widget_feed(DEFAULT_COHORT)` to `WIDGET_PATH`, which is
 `citizenship.json` in Scriptable's iCloud folder, and skips the write when that folder doesn't exist.
 The feed holds the cohort's `--summarize` cells for `WIDGET_FIELDS` (arrives, sweep ends,
-done by then, if left half by), each a label, its value as a date, and its detail
+done by then, if left half by), each a label, its value as a date in `short_month` form (`4'28` for 2028-04), and its detail
 as a duration (`""` when it would repeat the value, as for the done-by-then share).
 [scriptable/citizenship.js](scriptable/citizenship.js) draws them as columns of
 date, small duration and label, each line in a fixed-height stack so the three
-kinds of line line up across the columns. To install it, copy it to
+kinds of line line up across the columns. The values never shrink to fit, so
+they are all one size (26pt medium, 13pt small). To install it, copy it to
 `~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/Documents/Citizenship.js`, then add
 a Scriptable widget on the iPhone and pick that script. The tests patch `burndown.WIDGET_PATH`,
 so they never write to iCloud. How to change and deploy the widget:

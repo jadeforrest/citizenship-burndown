@@ -1858,14 +1858,21 @@ class Widget(unittest.TestCase):
         self.assertEqual([r["label"] for r in feed["rows"]],
                          ["Sweep arrives", "Sweep done", "Done by then",
                           "If left, half by"])
-        self.assertEqual([dates[h] for h in heads], [r["value"] for r in feed["rows"]])
+        self.assertEqual([b.short_month(dates[h]) for h in heads],
+                         [r["value"] for r in feed["rows"]])
         self.assertEqual([lengths[h] if lengths[h] != dates[h] else "" for h in heads],
                          [r["detail"] for r in feed["rows"]])
         self.assertEqual(feed["rows"][2]["detail"], "")   # a share has no length
-        self.assertRegex(feed["rows"][1]["value"], r"^\d{4}-\d{2}$")
+        self.assertRegex(feed["rows"][1]["value"], r"^\d{1,2}'\d{2}$")
         self.assertRegex(feed["rows"][1]["detail"], r"^\d+[ym]")
         self.assertEqual(set(feed["rows"][0]), {"label", "value", "detail"})
         self.assertIsNone(b.DATES_FROM)
+
+    def test_short_month(self):
+        for text, want in (("2028-01", "1'28"), ("2030-12", "12'30"),
+                           ("2100-04", "4'00"), ("64%", "64%"), ("now", "now"),
+                           ("-", "-"), ("1y 5m", "1y 5m"), ("12345-01", "12345-01")):
+            self.assertEqual(b.short_month(text), want, text)
 
     def test_dates_from_restores_the_previous_value(self):
         with b.dates_from("2025-01"):
