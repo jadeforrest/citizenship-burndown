@@ -336,7 +336,8 @@ if left half by), each split by `widget_cell` into the value and its band.
 [scriptable/citizenship.js](scriptable/citizenship.js) draws them. To install it, copy it to
 `~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/Documents/Citizenship.js`, then add
 a Scriptable widget on the iPhone and pick that script. The tests patch `burndown.WIDGET_PATH`,
-so they never write to iCloud.
+so they never write to iCloud. How to change and deploy the widget:
+`~/Developer/ops/docs/iphone-widgets.md`.
 
 ## Code structure
 
