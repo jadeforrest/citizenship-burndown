@@ -2,8 +2,9 @@
 //
 // Reads citizenship.json from Scriptable's iCloud folder, which flpt_watch.py
 // writes hourly (burndown.write_widget) once that folder exists: the 2025-07
-// cohort's --summarize estimates (sweep arrives, sweep done, if left half by),
-// each as the newest window's figure with the recent range under it.
+// cohort's --summarize estimates (sweep arrives, sweep done, done by
+// then, if left half by)
+// at the last 3 months' rates.
 //
 // Small, medium and lock-screen rectangular sizes.
 
@@ -39,9 +40,8 @@ function homeWidget(feed, family) {
     if (i > 0) row.addSpacer();
     const s = row.addStack();
     s.layoutVertically();
-    addText(s, r.value, family === "small" ? 28 : 44, TEXT, true);
+    addText(s, r.value, family === "small" ? 22 : 36, TEXT, true);
     addText(s, r.label, 15, DIM);
-    if (r.detail) addText(s, r.detail, 15, DIM);
   });
   w.refreshAfterDate = new Date(Date.now() + 6 * 3600e3);
   return w;

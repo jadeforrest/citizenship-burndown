@@ -859,18 +859,18 @@ def fmt_count(value: float) -> str:
     return text if len(text) <= SUMMARY_CELL else f"{value:.0e}"
 
 
-def fmt_months_short(months: float, unit: str = "m") -> str:
+def fmt_months_short(months: float) -> str:
     """
-    Whole months followed by `unit`, in at most SUMMARY_CELL characters:
+    Whole months followed by "m", in at most SUMMARY_CELL characters:
     "13m", "<1m" under a month, "never" for inf. The inputs are too rough
     for tenths of a month to mean anything.
     """
     if months == float("inf"):
         return "never"
     if months < 1:
-        return f"<1{unit}"
-    text = f"{months:,.0f}{unit}"
-    return text if len(text) <= SUMMARY_CELL else f"{months:.0e}{unit}"
+        return "<1m"
+    text = f"{months:,.0f}m"
+    return text if len(text) <= SUMMARY_CELL else f"{months:.0e}m"
 
 
 def print_banner(title: str, width: int) -> None:
@@ -911,12 +911,6 @@ SIZE_FROM = "2026-03"
 # processed, after the months until the sweep arrives. 50% is about when the
 # sweep finishes with your cohort.
 ESTIMATE_ODDS = (0.50, 0.75, 0.90)
-
-# --summarize brackets each figure with the lowest and highest it comes to
-# over the RECENT_MONTHS windows ending in the last BAND_WINDOWS periods: the
-# pace has swung 92-213 a month across them, about what rounding the
-# published counts to 100 does on its own.
-BAND_WINDOWS = 4
 
 # The leftovers' rate is measured over the longest window of up to this many
 # months (and at least RECENT_MONTHS) that opens after the sweep had passed
@@ -1393,19 +1387,12 @@ def fifo_paces(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
     """
     The --fifo estimate rows: (label, sweep pace); None for no sweep at all,
     the only row when there's no RECENT_MONTHS window to measure a pace in.
-    The recent pace is sweep_pace() at `last`; the best is the fastest
-    sweep_pace() over any window ending in a month the tail has a figure
-    for, each net of the trickle measured over that same window.
+    The sweep row is sweep_pace() over the RECENT_MONTHS ending at `last`.
     """
     recent = sweep_pace(cohorts, names, last, background)
     if recent is None:
         return [("no sweep", None)]
-    paces = [sweep_pace(cohorts, names, end, fifo_background(cohorts, names, end)[1])
-             for end, _ in cohorts[names[0]] if end <= last]
-    return [("no sweep", None),
-            (f"sweep, recent {RECENT_MONTHS} mo", recent),
-            (f"sweep, best {RECENT_MONTHS} mo",
-             max(p for p in paces if p is not None))]
+    return [("no sweep", None), (f"sweep, recent {RECENT_MONTHS} mo", recent)]
 
 
 def print_fifo_table(rows: list[CohortRates], target: str, width: int) -> None:
@@ -1473,27 +1460,9 @@ def estimate_cells(background: float, pos: Position, pace: float | None,
         for q in ESTIMATE_ODDS]
 
 
-def band_text(values: list[float], fmt) -> str:
-    """
-    The first (newest window's) value as `fmt` gives it, then the lowest and
-    highest of `values` in brackets when they show differently, the unit
-    once at the end of the range: `fmt(value, unit="")` drops it.
-    """
-    low, high = fmt(min(values)), fmt(max(values))
-    newest = fmt(values[0])
-    if low == high:
-        return newest
-    return f"{newest} ({fmt(min(values), '')}-{high})"
-
-
-def band_cell(values: list[float]) -> str:
-    """band_text() in whole months: "17m (16-25m)"."""
-    return band_text(values, fmt_months_short)
-
-
-def fmt_share(fraction: float, unit: str = "%") -> str:
+def fmt_share(fraction: float) -> str:
     """A 0..1 chance in whole percent: "61%"."""
-    return f"{100 * fraction:.0f}{unit}"
+    return f"{100 * fraction:.0f}%"
 
 
 class Split(NamedTuple):
@@ -1532,26 +1501,23 @@ def sweep_split(background: float, pos: Position, pace: float,
 SPLIT_HEADS = ("arrives", "sweep ends", "done by then", "if left, half by")
 
 
-def split_cells(rates: list[Rates], pos: Position,
+def split_cells(rates: Rates, pos: Position,
                 passed: bool | None = None) -> list[str]:
     """
-    One cohort's SPLIT_HEADS as text, each a band over `rates` (newest
-    first): when the sweep arrives, then sweep_split(). Where the newest
-    window gives a word (now, passed, -, never) it stands alone; a cohort
-    the sweep has passed keeps only its leftovers' time.
+    One cohort's SPLIT_HEADS as text at `rates`: when the sweep arrives,
+    then sweep_split(). Where the arrival is a word (now, passed, -, never)
+    it stands alone; a cohort the sweep has passed keeps only its leftovers'
+    time.
     """
-    word = arrival_text(rates[0].background, pos, rates[0].pace, passed)
+    word = arrival_text(rates.background, pos, rates.pace, passed)
     if word in ("-", "never"):
         return [word, word, "-", "-"]
-    splits = [sweep_split(r.background, pos, r.pace or 0.0, r.leftover)
-              for r in rates]
-    half = band_cell([s.half for s in splits])
+    split = sweep_split(rates.background, pos, rates.pace or 0.0, rates.leftover)
+    half = fmt_months_short(split.half)
     if word == "passed":
         return [word, "-", "-", half]
-    arrive = word if word == "now" else band_cell(
-        [arrival_months(r, pos) for r in rates])
-    return [arrive, band_cell([s.ends for s in splits]),
-            band_text([s.done for s in splits], fmt_share), half]
+    arrive = word if word == "now" else fmt_months_short(arrival_months(rates, pos))
+    return [arrive, fmt_months_short(split.ends), fmt_share(split.done), half]
 
 
 def arrival_months(rates: Rates, pos: Position) -> float:
@@ -1668,25 +1634,6 @@ def model_rates(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
     leftover = None if months is None else leftover_rate(cohorts, names, end, months)
     return Rates(background, max(leftover or 0.0, background),
                  sweep_pace(cohorts, names, end, background), months)
-
-
-def recent_rates(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
-                 last: str) -> list[Rates]:
-    """
-    model_rates() for the windows ending in each of the last BAND_WINDOWS
-    periods, newest first, leaving out any without a pace; just the newest
-    (pace None) if none has one. When the newest measured the leftovers'
-    rate, so must the others: one that fell back to the trickle would put
-    that fallback, not the rates' spread, into the band.
-    """
-    rates = [model_rates(cohorts, names, month_label(month_index(last) - k))
-             for k in range(BAND_WINDOWS)]
-    paced = [r for r in rates if r.pace is not None]
-    if not paced:
-        return rates[:1]
-    newest, *older = paced
-    return [newest] + [r for r in older if r.leftover_months is not None
-                       or newest.leftover_months is None]
 
 
 def half_life(rate: float) -> str:
@@ -1810,7 +1757,7 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
                f"takes {fmt_count(pos.take)} of its {fmt_count(pos.waiting)} "
                "(fewer by then, as the trickle thins both). The rows: no sweep "
                f"is the trickle alone, recent the latest {RECENT_MONTHS}-month "
-               f"pace, best the fastest {RECENT_MONTHS}-month pace so far.",
+               "pace.",
                width))
     print()
     print_estimates(fifo_paces(cohorts, names, last, rates.background),
@@ -1819,9 +1766,8 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
     print(paint("=" * width, "cyan") + "\n")
 
 
-# The estimate groups --summarize shows for each cohort: one, at the recent
-# pace, which backtested closest (median and best ran far too fast),
-# bracketed by the last BAND_WINDOWS windows (recent_rates).
+# --summarize shows each cohort's estimates at the recent RECENT_MONTHS pace
+# only, which backtested closest (median and best ran far too fast).
 def fifo_percent(score: float | None) -> str:
     """An OrderScore.score() as "% fifo"; clamped to +-999% for degenerate data."""
     return "n/a" if score is None else f"{max(min(score, 9.99), -9.99):.0%}"
@@ -1847,13 +1793,13 @@ def leftover_percent(pos: Position) -> str:
 
 def fifo_summary_rows(cohorts: dict[str, list[tuple[str, float]]],
                       names: list[str], last: str,
-                      rates: list[Rates]) -> list[FifoSummaryRow]:
+                      rates: Rates) -> list[FifoSummaryRow]:
     """
     Each settled cohort's people ahead, files still to be swept ahead of it
     and own still waiting in `last`, its leftover share if the sweep is in
     it or has passed it (behind the sweep it's always STRAGGLERS), its
     OrderScore over the last RECENT_MONTHS against the settled cohorts after
-    it, and its split_cells() over `rates` (recent_rates()).
+    it, and its split_cells() at `rates` (model_rates() at `last`).
     """
     rows = []
     for name in names:
@@ -1945,11 +1891,8 @@ def summary_items(names: list[str], last: str) -> list[str]:
         "If left, half by: if you haven't been processed by then, you're a "
         "leftover, and this is the months until half of the leftovers have "
         "been processed.",
-        f"All times are months from {last}. Each is the latest "
-        f"{RECENT_MONTHS}-month window's; in brackets, the lowest and highest "
-        f"over the windows ending in each of the last {BAND_WINDOWS} months "
-        "(leaving out any that couldn't measure the rates). Rounding the "
-        "published counts to 100 moves them about that much on its own."]
+        f"All times are months from {last}, at the rates over the last "
+        f"{RECENT_MONTHS} months."]
 
 
 def print_fifo_summary(cohorts: dict[str, list[tuple[str, float]]], width: int,
@@ -1959,16 +1902,16 @@ def print_fifo_summary(cohorts: dict[str, list[tuple[str, float]]], width: int,
     if not names:
         return
     last = latest_period(cohorts)
-    rates = recent_rates(cohorts, names, last)
+    rates = model_rates(cohorts, names, last)
     rows = fifo_summary_rows(cohorts, names, last, rates)
-    pace = rates[0].pace
+    pace = rates.pace
     print(wrap(f"For each cohort from {names[0]}, in {last}:", width))
     print(bullets(summary_items(names, last), width))
     print("\nHow the model works:")
     pace_words = ("files at a pace too new to measure" if pace is None else
                   f"{fmt_count(max(pace, 0))} files a month (last "
                   f"{RECENT_MONTHS} months)")
-    print(bullets(sweep_items(rates[0], pace_words, names[0])
+    print(bullets(sweep_items(rates, pace_words, names[0])
                   + [unsettled_note(names), BACKTEST_NOTE], width))
     print()
     if not rows:
@@ -1987,13 +1930,8 @@ WIDGET_PATH = Path("~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/"
                    "Documents/citizenship.json").expanduser()
 # The SPLIT_HEADS the widget shows, and what it calls them.
 WIDGET_FIELDS = (("arrives", "Sweep arrives"), ("sweep ends", "Sweep done"),
+                 ("done by then", "Done by then"),
                  ("if left, half by", "If left, half by"))
-
-
-def widget_cell(label: str, cell: str) -> dict:
-    """A split_cells() cell like "17m (17-44m)" as {label, value: 17m, detail: 17-44m}."""
-    value, _, band = cell.partition(" (")
-    return {"label": label, "value": value, "detail": band.rstrip(")")}
 
 
 def widget_feed(cohorts: dict[str, list[tuple[str, float]]],
@@ -2007,13 +1945,14 @@ def widget_feed(cohorts: dict[str, list[tuple[str, float]]],
     if cohort not in names:
         return None
     last = latest_period(cohorts)
-    rows = fifo_summary_rows(cohorts, names, last, recent_rates(cohorts, names, last))
+    rows = fifo_summary_rows(cohorts, names, last, model_rates(cohorts, names, last))
     row = next((r for r in rows if r.cohort == cohort), None)
     if row is None:
         return None
     cells = dict(zip(SPLIT_HEADS, row.split))
     return {"version": 1, "title": f"Citizenship {cohort}", "period": last,
-            "rows": [widget_cell(label, cells[head]) for head, label in WIDGET_FIELDS]}
+            "rows": [{"label": label, "value": cells[head]}
+                     for head, label in WIDGET_FIELDS]}
 
 
 def write_widget(history: Path = HISTORY_PATH, path: Path | None = None,

@@ -102,7 +102,7 @@ prints:
   cohort is more than `BULGE_RISE` below its size, i.e. the sweep has moved
   on to it; before that (the early-2026 sweep) the tail is what it's
   sweeping;
-- for each pace row (none, recent, best `RECENT_MONTHS` window), when the
+- for each pace row (none, and the recent `RECENT_MONTHS` window), when the
   sweep `arrives` (`arrival_text`: months, `now`, `passed`, `never`), then
   whole months until COHORT's chance of being processed reaches each
   `ESTIMATE_ODDS` (50%, 75%, 90%, under `ESTIMATE_HEADS`) — from
@@ -119,9 +119,8 @@ not the sweep's: until 2026-11-20 the tail's clearance was counted in the pace
 *and* the leftovers were assumed to clear only at the trickle, which spent it
 twice (about 43 of 213 a month). `model_rates` bundles a window's trickle,
 leftover rate (never below the trickle) and pace as `Rates`.
-`fifo_paces(cohorts, names, last, background)` gives the recent pace and
-the best over any window ending in a month the tail has a figure for, each
-net of the trickle measured over its own window. (Until 2026-11-20 each cohort
+`fifo_paces(cohorts, names, last, background)` gives the recent pace, net of
+the trickle. (Until 2026-11-20 each cohort
 got its own pace from its own people-ahead drop less trickle × people ahead;
 for the later cohorts that was a small difference of two big numbers, and the
 rows contradicted each other, 40-240 a month.)
@@ -189,14 +188,11 @@ try others.
   leftover with a long tail, so these replaced the 50%/90% columns on
   2026-11-20 (a 50%-90% range hid that; `--fifo` still shows 50/75/90%).
 
-Each estimate is a `band_cell` like `17m (17-43m)` (`band_text`, with
-`fmt_share` for the chance): the newest window's figure, then the lowest and
-highest over the windows ending in the last `BAND_WINDOWS` (4) periods
-(`recent_rates`). When the newest window measured the leftover rate, windows
-that couldn't (it fell back to the trickle) are left out: they made every
-swept cohort's 90% the same 92 months, the fallback rather than the rates'
-spread. The pace swung 92-213 a month over those windows, about what rounding
-the counts to 100 does on its own. Only the recent pace is used because it
+Each estimate is at the rates over the latest `RECENT_MONTHS` window
+(`model_rates` at the latest period). Until 2026-11-24 each cell also showed
+a bracketed low-high range over the last four windows, and `--fifo` a "best
+3 mo" pace row; both were dropped as confusing, since the recent window has
+been the most accurate. Only the recent pace is used because it
 backtested closest: from 2026-05 and 2026-08 cutoffs, median paces (which
 still hold the fast early-2026 months) over-predicted clearance badly.
 `--summarize --fifo COHORT` just bolds COHORT's rows. Both tables go through
@@ -332,7 +328,7 @@ launchctl bootout gui/$(id -u)/com.jade.flpt-watch; ~/Developer/ops/install-all.
 `burndown.write_widget` writes `widget_feed(DEFAULT_COHORT)` to `WIDGET_PATH`, which is
 `citizenship.json` in Scriptable's iCloud folder, and skips the write when that folder doesn't exist.
 The feed holds the cohort's `--summarize` cells for `WIDGET_FIELDS` (arrives, sweep ends,
-if left half by), each split by `widget_cell` into the value and its band.
+done by then, if left half by), each a label and its value.
 [scriptable/citizenship.js](scriptable/citizenship.js) draws them. To install it, copy it to
 `~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/Documents/Citizenship.js`, then add
 a Scriptable widget on the iPhone and pick that script. The tests patch `burndown.WIDGET_PATH`,
