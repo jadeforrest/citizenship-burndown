@@ -822,6 +822,18 @@ class Cells(unittest.TestCase):
         self.assertEqual(b.fmt_months_short(999999.4), "1e+06m")
         self.assertEqual(b.fmt_months_short(float("inf")), "never")
 
+    def test_fmt_when(self):
+        inf = float("inf")
+        self.assertEqual(b.fmt_when(17.2), "17m")       # no --dates: months
+        with unittest.mock.patch.object(b, "DATES_FROM", "2026-11"):
+            self.assertEqual(b.fmt_when(17.2), "2028-04")
+            self.assertEqual(b.fmt_when(1.5), "2027-01")
+            self.assertEqual(b.fmt_when(0.3), "2026-11")
+            self.assertEqual(b.fmt_when(-2.0), "2026-11")
+            self.assertEqual(b.fmt_when(inf), "never")
+            self.assertEqual(b.fmt_when(96000.0), "96,000m")   # past year 9999
+            self.assertEqual(b.fmt_when(1e300), "1e+300m")
+
 
 class MainSummarize(unittest.TestCase):
     def test_summarizes_without_prompting(self):
@@ -1331,6 +1343,7 @@ When will 2025-07 be processed?
   through it, 'passed' if it has finished with it).
 - 50%, 75% and 90%: months until your chance of having been processed reaches
   that. The 50% is about when the sweep finishes with your cohort.
+- All times are months from 2026-10.
 
 How the model works:
 - A trickle clears 0.9% of every cohort a month, old or new: the pooled rate
@@ -1885,6 +1898,30 @@ class MainFifo(unittest.TestCase):
                 self.assertNotIn("PROCESSING ORDER", out, args)
                 self.assertNotIn("Pick a cohort", out, args)
 
+    def test_dates_shows_months_as_calendar_months(self):
+        with tempfile.TemporaryDirectory() as d:
+            for flag in ("--fifo", "--summarize"):
+                months = run_main("", self.history(d), (flag,))
+                dates = run_main("", self.history(d), (flag, "--dates"))
+                self.assertIn("as the month (YYYY-MM) they come to, counted "
+                              "from 2026-10", " ".join(dates.split()), flag)
+                self.assertNotIn("as the month (YYYY-MM)", " ".join(months.split()))
+                # Every whole-month cell becomes that month after 2026-10.
+                cells = re.findall(r"(?<![\w-])(\d+)m\b", months.split("pace/mo")[-1]
+                                   if flag == "--fifo" else months.split("Estimates:")[-1])
+                self.assertTrue(cells, flag)
+                for n in cells:
+                    self.assertIn(b.month_label(b.month_index("2026-10") + int(n)),
+                                  dates, (flag, n))
+            self.assertIsNone(b.DATES_FROM)     # reset once the report is out
+
+    def test_dates_needs_a_report(self):
+        with tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit):
+            run_main("", Path(d) / "none.csv", ("--dates",))
+        self.assertIn("--dates needs --summarize or --fifo", err.getvalue())
+
     def test_bad_cohort_is_rejected(self):
         with tempfile.TemporaryDirectory() as d, \
                 contextlib.redirect_stderr(io.StringIO()) as err, \
@@ -2246,6 +2283,22 @@ class FuzzFifo(unittest.TestCase):
                     self.assertGreaterEqual(split.half, split.ends)
                     self.assertAlmostEqual(b.sweep_chance(split.half, *args),
                                            1 - (1 - split.done) / 2, places=9)
+
+    def test_dates_count_the_months_from_the_period(self):
+        rng = random.Random(20261124)
+        for i in range(self.CASES):
+            start = b.month_label(rng.randint(2000 * 12, 2100 * 12))
+            months = rng.choice([float("inf"), -rng.uniform(0, 5),
+                                 rng.uniform(0, 2000), rng.uniform(0, 1e6)])
+            with self.subTest(case=i, start=start, months=months), \
+                    unittest.mock.patch.object(b, "DATES_FROM", start):
+                text = b.fmt_when(months)
+                self.assertLessEqual(len(text), b.SUMMARY_CELL)
+                if b.month_key(text) == text:
+                    self.assertEqual(b.month_index(text) - b.month_index(start),
+                                     round(max(months, 0.0)))
+                else:
+                    self.assertEqual(text, b.fmt_months_short(months))
 
     def test_months_to_chance_inverts_sweep_chance(self):
         rng = random.Random(20261025)

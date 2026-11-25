@@ -195,7 +195,12 @@ a bracketed low-high range over the last four windows, and `--fifo` a "best
 been the most accurate. Only the recent pace is used because it
 backtested closest: from 2026-05 and 2026-08 cutoffs, median paces (which
 still hold the fast early-2026 months) over-predicted clearance badly.
-`--summarize --fifo COHORT` just bolds COHORT's rows. Both tables go through
+`--summarize --fifo COHORT` just bolds COHORT's rows. `--dates` (with
+`--summarize` or `--fifo`, an error alone) shows every time as the month it
+comes to instead (`fmt_when`: the latest period plus the rounded months,
+`2028-04` for 17m from 2026-11; `never` stays, and past year 9999 it falls
+back to months). `print_report` sets the module-level `DATES_FROM` only while
+the report prints, so the widget feed, which shares `split_cells`, keeps months. Both tables go through
 `print_columns` (about 55 and 70 columns on today's data); narrower, the
 counts become a sentence per cohort (`summary_lead_text`) and the estimates
 a heading per cohort with a line per cell. In `--fifo`'s estimate rows, too

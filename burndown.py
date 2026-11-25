@@ -44,6 +44,9 @@ skips the prompt and reports how close to oldest-first the processing is:
 each settled cohort's own monthly clearance, a 0 (random) to 1 (oldest-first)
 score, and months until COHORT (default 2025-07) is likely processed under a
 model of an oldest-first sweep on top of a steady age-blind background.
+
+Add --dates to either to show those times as the month (YYYY-MM) they come to,
+counted from the latest period, instead of as months from it.
 """
 
 import argparse
@@ -873,6 +876,31 @@ def fmt_months_short(months: float) -> str:
     return text if len(text) <= SUMMARY_CELL else f"{months:.0e}m"
 
 
+# With --dates, the period --summarize and --fifo count their times from, so
+# fmt_when() shows the month a time comes to; None shows months from now.
+DATES_FROM: str | None = None
+
+
+def fmt_when(months: float) -> str:
+    """
+    fmt_months_short(), or with DATES_FROM set the YYYY-MM month that many
+    (rounded) months after it: "2028-04". Past what fits in SUMMARY_CELL
+    (the year 10000) it falls back to months, and inf is "never" either way.
+    """
+    if DATES_FROM is None or not math.isfinite(months):
+        return fmt_months_short(months)
+    text = month_label(month_index(DATES_FROM) + round(max(months, 0.0)))
+    return text if len(text) <= SUMMARY_CELL else fmt_months_short(months)
+
+
+def times_note(last: str) -> str:
+    """How the estimate times read: months from `last`, or (--dates) a month."""
+    if DATES_FROM is None:
+        return f"All times are months from {last}"
+    return (f"All times are shown as the month (YYYY-MM) they come to, counted "
+            f"from {last}")
+
+
 def print_banner(title: str, width: int) -> None:
     """A report's title between two rules."""
     banner = paint("=" * min(width, 60), "cyan")
@@ -1455,7 +1483,7 @@ def estimate_cells(background: float, pos: Position, pace: float | None,
     whole months to each of ESTIMATE_ODDS.
     """
     return [arrival_text(background, pos, pace, passed)] + [
-        fmt_months_short(months_to_chance(q, background, pos, pace or 0.0,
+        fmt_when(months_to_chance(q, background, pos, pace or 0.0,
                                           leftover))
         for q in ESTIMATE_ODDS]
 
@@ -1513,11 +1541,11 @@ def split_cells(rates: Rates, pos: Position,
     if word in ("-", "never"):
         return [word, word, "-", "-"]
     split = sweep_split(rates.background, pos, rates.pace or 0.0, rates.leftover)
-    half = fmt_months_short(split.half)
+    half = fmt_when(split.half)
     if word == "passed":
         return [word, "-", "-", half]
-    arrive = word if word == "now" else fmt_months_short(arrival_months(rates, pos))
-    return [arrive, fmt_months_short(split.ends), fmt_share(split.done), half]
+    arrive = word if word == "now" else fmt_when(arrival_months(rates, pos))
+    return [arrive, fmt_when(split.ends), fmt_share(split.done), half]
 
 
 def arrival_months(rates: Rates, pos: Position) -> float:
@@ -1543,7 +1571,7 @@ def arrival_text(background: float, pos: Position, pace: float | None,
         return "never"
     if pos.work <= 0:
         return "now"
-    return fmt_months_short(arrival(background, pos, pace))
+    return fmt_when(arrival(background, pos, pace))
 
 
 def pace_text(pace: float | None) -> str:
@@ -1747,7 +1775,8 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
     pos = position(cohorts, target, last)
     ahead = dict(cohorts[target])[last]
     print("\n" + paint(f"When will {target} be processed?", "bold", "cyan"))
-    print(bullets(estimate_items(ESTIMATE_ODDS), width))
+    print(bullets(estimate_items(ESTIMATE_ODDS)
+                  + [f"{times_note(last)}."], width))
     print("\nHow the model works:")
     print(bullets(sweep_items(rates, "files at the row's pace", names[0])
                   + [BACKTEST_NOTE], width))
@@ -1891,8 +1920,8 @@ def summary_items(names: list[str], last: str) -> list[str]:
         "If left, half by: if you haven't been processed by then, you're a "
         "leftover, and this is the months until half of the leftovers have "
         "been processed.",
-        f"All times are months from {last}, at the rates over the last "
-        f"{RECENT_MONTHS} months."]
+        f"{times_note(last)}, at the rates over the last {RECENT_MONTHS} "
+        "months."]
 
 
 def print_fifo_summary(cohorts: dict[str, list[tuple[str, float]]], width: int,
@@ -2061,16 +2090,31 @@ def parse_args(argv) -> argparse.Namespace:
         type=cohort_arg,
         help=f"no prompt: how close to oldest-first processing is, and when "
              f"COHORT (default {DEFAULT_COHORT}) is likely to be processed")
-    return parser.parse_args(list(argv))
+    parser.add_argument(
+        "--dates", action="store_true",
+        help="with --summarize or --fifo: show each time as the month "
+             "(YYYY-MM) it comes to rather than months from the latest period")
+    args = parser.parse_args(list(argv))
+    if args.dates and not (args.summarize or args.fifo):
+        parser.error("--dates needs --summarize or --fifo")
+    return args
 
 
 def print_report(args: argparse.Namespace,
                  cohorts: dict[str, list[tuple[str, float]]], width: int) -> bool:
-    """The report --summarize and/or --fifo asked for; False if neither did."""
-    if args.summarize:
-        print_fifo_summary(cohorts, width, args.fifo or DEFAULT_COHORT)
-    elif args.fifo:
-        print_fifo(cohorts, width, args.fifo)
+    """
+    The report --summarize and/or --fifo asked for; False if neither did.
+    With --dates, DATES_FROM is the latest period while it prints.
+    """
+    global DATES_FROM
+    DATES_FROM = latest_period(cohorts) if args.dates and cohorts else None
+    try:
+        if args.summarize:
+            print_fifo_summary(cohorts, width, args.fifo or DEFAULT_COHORT)
+        elif args.fifo:
+            print_fifo(cohorts, width, args.fifo)
+    finally:
+        DATES_FROM = None
     return bool(args.summarize or args.fifo)
 
 
