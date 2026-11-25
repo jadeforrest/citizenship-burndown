@@ -808,31 +808,37 @@ class Cells(unittest.TestCase):
         for value in (0, 7, 9999999, 10000000, -9999999, 1e300, -1e300, 0.4):
             self.assertLessEqual(len(b.fmt_count(value)), b.SUMMARY_CELL, value)
         for months in (0, 1.25, 99999.9, 9999.94, 1e7, 1e300, float("inf")):
-            self.assertLessEqual(len(b.fmt_months_short(months)), b.SUMMARY_CELL,
+            self.assertLessEqual(len(b.fmt_duration(months)), b.SUMMARY_CELL,
                                  months)
         self.assertEqual(b.fmt_count(9300), "9,300")
         self.assertEqual(b.fmt_count(999999), "999,999")   # exactly SUMMARY_CELL
-        # Whole months: the inputs are too rough for tenths.
-        self.assertEqual(b.fmt_months_short(12.94), "13m")
-        self.assertEqual(b.fmt_months_short(1), "1m")
-        self.assertEqual(b.fmt_months_short(0.99), "<1m")
-        self.assertEqual(b.fmt_months_short(0), "<1m")
-        # E-notation only once the separated form overflows.
-        self.assertEqual(b.fmt_months_short(99999.4), "99,999m")
-        self.assertEqual(b.fmt_months_short(999999.4), "1e+06m")
-        self.assertEqual(b.fmt_months_short(float("inf")), "never")
+        # Whole months, as years and months: the inputs are too rough for tenths.
+        self.assertEqual(b.fmt_duration(11.4), "11m")
+        self.assertEqual(b.fmt_duration(11.6), "1y")
+        self.assertEqual(b.fmt_duration(12.94), "1y 1m")
+        self.assertEqual(b.fmt_duration(17.2), "1y 5m")
+        self.assertEqual(b.fmt_duration(1), "1m")
+        self.assertEqual(b.fmt_duration(0.99), "<1m")
+        self.assertEqual(b.fmt_duration(0), "<1m")
+        # Months dropped past 99y 11m, e-notation once the years overflow.
+        self.assertEqual(b.fmt_duration(1199), "99y 11m")
+        self.assertEqual(b.fmt_duration(1201), "100y 1m")
+        self.assertEqual(b.fmt_duration(12001), "1,000y")
+        self.assertEqual(b.fmt_duration(99999.4), "8,333y")
+        self.assertEqual(b.fmt_duration(12e6), "1e+06y")
+        self.assertEqual(b.fmt_duration(float("inf")), "never")
 
     def test_fmt_when(self):
         inf = float("inf")
-        self.assertEqual(b.fmt_when(17.2), "17m")       # no --dates: months
+        self.assertEqual(b.fmt_when(17.2), "1y 5m")     # --durations
         with unittest.mock.patch.object(b, "DATES_FROM", "2026-11"):
             self.assertEqual(b.fmt_when(17.2), "2028-04")
             self.assertEqual(b.fmt_when(1.5), "2027-01")
             self.assertEqual(b.fmt_when(0.3), "2026-11")
             self.assertEqual(b.fmt_when(-2.0), "2026-11")
             self.assertEqual(b.fmt_when(inf), "never")
-            self.assertEqual(b.fmt_when(96000.0), "96,000m")   # past year 9999
-            self.assertEqual(b.fmt_when(1e300), "1e+300m")
+            self.assertEqual(b.fmt_when(96000.0), "8,000y")   # past year 9999
+            self.assertEqual(b.fmt_when(1e300), "8e+298y")
 
 
 class MainSummarize(unittest.TestCase):
@@ -1292,7 +1298,7 @@ class Fifo(unittest.TestCase):
                 with unittest.mock.patch.object(b, "COLOR", True):
                     colored = run_fifo(FIFO_COHORTS, width)
                 self.assertEqual(ANSI.sub("", colored), out)
-                for figure in ("6,300", "0.7%", "0.9%", "3.3%", "54m", "114", "1,350"):
+                for figure in ("6,300", "0.7%", "0.9%", "3.3%", "4y 6m", "9y 6m", "1,350"):
                     self.assertIn(figure, out)
 
     def test_target_grew_and_never_are_painted(self):
@@ -1343,7 +1349,7 @@ When will 2025-07 be processed?
   through it, 'passed' if it has finished with it).
 - 50%, 75% and 90%: months until your chance of having been processed reaches
   that. The 50% is about when the sweep finishes with your cohort.
-- All times are months from 2026-10.
+- All times are how long from 2026-10, in years and months.
 
 How the model works:
 - A trickle clears 0.9% of every cohort a month, old or new: the pooled rate
@@ -1368,19 +1374,19 @@ For 2025-07: of the 9,300 ahead, 1,350 are still to be swept, then the sweep
 takes 1,100 of its 2,200 (fewer by then, as the trickle thins both). The rows:
 no sweep is the trickle alone, recent the latest 3-month pace.
 
-                      pace/mo  arrives  50%   75%   90%
-  no sweep                  -        -  78m  156m  259m
-  sweep, recent 3 mo       19      54m  63m   87m  114m
+                      pace/mo  arrives    50%    75%     90%
+  no sweep                  -        -  6y 6m    13y  21y 7m
+  sweep, recent 3 mo       19    4y 6m  5y 3m  7y 3m   9y 6m
 """ + "=" * WIDE + "\n\n")
 
     def test_stacked_text(self):
         out = run_fifo(FIFO_COHORTS, STACKED)
         self.assertEqual(out[out.index("    arrives"):], """\
-    arrives  50%   75%   90%
+    arrives    50%    75%     90%
   no sweep
-          -  78m  156m  259m
+          -  6y 6m    13y  21y 7m
   sweep, recent 3 mo, 19 a month
-        54m  63m   87m  114m
+      4y 6m  5y 3m  7y 3m   9y 6m
 """ + "=" * STACKED + "\n\n")
         self.assertIn("\n  cohort   waiting  last 3 mo  last 6 mo\n", out)
 
@@ -1494,7 +1500,7 @@ order score or estimate for it.
                          ["-", "never", "never", "never"])
         # ESTIMATE_CAP is where "never" starts: a 90% chance just inside it
         # is a figure, just past it isn't.
-        for months, shown in ((1199.4, "1,199m"), (1200.5, "never")):
+        for months, shown in ((1199.4, "99y 11m"), (1200.5, "never")):
             background = 1 - 0.1 ** (1 / months)
             self.assertEqual(b.estimate_cells(background, b.Position(0, 1, 0.7),
                                               None)[3],
@@ -1504,14 +1510,14 @@ order score or estimate for it.
         # Every chance reached, only the first, or none.
         pos = b.Position(4900, 1400, 980)
         self.assertEqual(b.estimate_cells(0.02, b.Position(0, 0, 0), None),
-                         ["-", "34m", "69m", "114m"])
+                         ["-", "2y 10m", "5y 9m", "9y 6m"])
         self.assertEqual(b.estimate_cells(0.0, pos, 700.0),
                          ["7m", "8m", "never", "never"])
         self.assertEqual(b.estimate_cells(0.0, pos, None),
                          ["-", "never", "never", "never"])
         # The leftovers' rate reaches the later chances.
         self.assertEqual(b.estimate_cells(0.0, pos, 700.0, 0.1),
-                         ["7m", "8m", "10m", "19m"])
+                         ["7m", "8m", "10m", "1y 7m"])
 
     def test_arrival_text(self):
         cases = {(b.Position(0, 100, 0), 700.0): "passed",
@@ -1623,7 +1629,8 @@ For each cohort from 2025-05, in 2026-10:
   sweep.
 - If left, half by: if you haven't been processed by then, you're a leftover,
   and this is the months until half of the leftovers have been processed.
-- All times are months from 2026-10, at the rates over the last 3 months.
+- All times are how long from 2026-10, in years and months, at the rates over
+  the last 3 months.
 
 How the model works:
 - A trickle clears 0.9% of every cohort a month, old or new: the pooled rate
@@ -1656,9 +1663,9 @@ How the model works:
 
 Estimates:
   cohort   arrives  sweep ends  done by then  if left, half by
-  2025-05      now         31m           54%               52m
-  2025-06      27m         58m           70%               79m
-  2025-07      54m         90m           77%              110m
+  2025-05      now       2y 7m           54%             4y 4m
+  2025-06    2y 3m      4y 10m           70%             6y 7m
+  2025-07    4y 6m       7y 6m           77%             9y 2m
 """ + "=" * WIDE + "\n\n")
 
     def test_matches_the_fifo_report(self):
@@ -1669,7 +1676,7 @@ Estimates:
             fifo = run_fifo(FIFO_COHORTS, WIDE, target)
             line = next(ln for ln in fifo.splitlines()
                         if ln.startswith("  sweep, recent 3 mo "))
-            arrive = line.split()[-4]
+            arrive = re.split(r"\s{2,}", line.strip())[2]
             self.assertRegex(summary, f"\n  {target} +{arrive}  ")
 
     def test_stacked_text(self):
@@ -1687,19 +1694,19 @@ Estimates:
 Estimates:
   2025-05
              arrives  now
-          sweep ends  31m
+          sweep ends  2y 7m
         done by then  54%
-    if left, half by  52m
+    if left, half by  4y 4m
   2025-06
-             arrives  27m
-          sweep ends  58m
+             arrives  2y 3m
+          sweep ends  4y 10m
         done by then  70%
-    if left, half by  79m
+    if left, half by  6y 7m
   2025-07
-             arrives  54m
-          sweep ends  90m
+             arrives  4y 6m
+          sweep ends  7y 6m
         done by then  77%
-    if left, half by  110m
+    if left, half by  9y 2m
 """ + "=" * 46 + "\n\n")
 
     def test_tables_down_to_exactly_their_width(self):
@@ -1772,8 +1779,8 @@ after its bulge yet.
     def test_split_cells(self):
         pos, gone = b.Position(0, 1000, 500), b.Position(0, 500, 0)
         fast, slow = b.Rates(0.0, 0.1, 100.0), b.Rates(0.0, 0.05, 50.0)
-        self.assertEqual(b.split_cells(fast, pos), ["now", "5m", "50%", "12m"])
-        self.assertEqual(b.split_cells(slow, pos), ["now", "10m", "50%", "24m"])
+        self.assertEqual(b.split_cells(fast, pos), ["now", "5m", "50%", "1y"])
+        self.assertEqual(b.split_cells(slow, pos), ["now", "10m", "50%", "2y"])
         self.assertEqual(b.split_cells(fast, gone), ["passed", "-", "-", "7m"])
         self.assertEqual(b.split_cells(fast, gone, False)[:3], ["now", "<1m", "0%"])
         self.assertEqual(b.split_cells(b.Rates(0.0, 0.1, None), pos),
@@ -1782,7 +1789,7 @@ after its bulge yet.
                          ["never", "never", "-", "-"])
         behind = b.Position(1400, 1000, 500)
         self.assertEqual(b.split_cells(fast, behind)[0],
-                         b.fmt_months_short(b.arrival_months(fast, behind)))
+                         b.fmt_duration(b.arrival_months(fast, behind)))
         self.assertEqual(b.fmt_share(0.614), "61%")
 
     def test_arrival_months(self):
@@ -1898,29 +1905,34 @@ class MainFifo(unittest.TestCase):
                 self.assertNotIn("PROCESSING ORDER", out, args)
                 self.assertNotIn("Pick a cohort", out, args)
 
-    def test_dates_shows_months_as_calendar_months(self):
+    def test_dates_by_default_durations_on_request(self):
+        def durations(text):
+            """Every "1y 5m", "2y" or "7m" cell, in months."""
+            return [12 * int(y or 0) + int(m or n or 0) for y, m, n in re.findall(
+                r"(?<![\w-])(?:(\d+)y(?: (\d+)m)?|(\d+)m)\b", text)]
         with tempfile.TemporaryDirectory() as d:
-            for flag in ("--fifo", "--summarize"):
-                months = run_main("", self.history(d), (flag,))
-                dates = run_main("", self.history(d), (flag, "--dates"))
+            for flag, table in (("--fifo", "pace/mo"), ("--summarize", "Estimates:")):
+                dates = run_main("", self.history(d), (flag,))
+                spans = run_main("", self.history(d), (flag, "--durations"))
                 self.assertIn("as the month (YYYY-MM) they come to, counted "
                               "from 2026-10", " ".join(dates.split()), flag)
-                self.assertNotIn("as the month (YYYY-MM)", " ".join(months.split()))
-                # Every whole-month cell becomes that month after 2026-10.
-                cells = re.findall(r"(?<![\w-])(\d+)m\b", months.split("pace/mo")[-1]
-                                   if flag == "--fifo" else months.split("Estimates:")[-1])
-                self.assertTrue(cells, flag)
-                for n in cells:
-                    self.assertIn(b.month_label(b.month_index("2026-10") + int(n)),
+                self.assertIn("All times are how long from 2026-10, in years and "
+                              "months", " ".join(spans.split()), flag)
+                # Every duration cell is that many months after 2026-10.
+                months = durations(spans.split(table)[-1])
+                self.assertTrue(months, flag)
+                self.assertFalse(durations(dates.split(table)[-1]), flag)
+                for n in months:
+                    self.assertIn(b.month_label(b.month_index("2026-10") + n),
                                   dates, (flag, n))
             self.assertIsNone(b.DATES_FROM)     # reset once the report is out
 
-    def test_dates_needs_a_report(self):
+    def test_durations_needs_a_report(self):
         with tempfile.TemporaryDirectory() as d, \
                 contextlib.redirect_stderr(io.StringIO()) as err, \
                 self.assertRaises(SystemExit):
-            run_main("", Path(d) / "none.csv", ("--dates",))
-        self.assertIn("--dates needs --summarize or --fifo", err.getvalue())
+            run_main("", Path(d) / "none.csv", ("--durations",))
+        self.assertIn("--durations needs --summarize or --fifo", err.getvalue())
 
     def test_bad_cohort_is_rejected(self):
         with tempfile.TemporaryDirectory() as d, \
@@ -2284,6 +2296,26 @@ class FuzzFifo(unittest.TestCase):
                     self.assertAlmostEqual(b.sweep_chance(split.half, *args),
                                            1 - (1 - split.done) / 2, places=9)
 
+    def test_durations_read_back_as_the_rounded_months(self):
+        rng = random.Random(20261125)
+        for i in range(self.CASES):
+            months = rng.choice([rng.uniform(1, 60), rng.uniform(1, 1300),
+                                 rng.uniform(1, 2e6)])
+            with self.subTest(case=i, months=months):
+                text = b.fmt_duration(months)
+                self.assertLessEqual(len(text), b.SUMMARY_CELL)
+                parts = re.fullmatch(r"(?:([\d,]+)y)? ?(?:(\d+)m)?", text)
+                if parts is None:                 # e-notation years
+                    self.assertRegex(text, r"^\de\+\d+y$")
+                    continue
+                years = int((parts[1] or "0").replace(",", ""))
+                total = 12 * years + int(parts[2] or 0)
+                if parts[2] is None and years >= 100:   # months dropped
+                    self.assertEqual(total // 12, round(months) // 12)
+                else:
+                    self.assertEqual(total, round(months))
+                    self.assertLess(int(parts[2] or 0), 12)
+
     def test_dates_count_the_months_from_the_period(self):
         rng = random.Random(20261124)
         for i in range(self.CASES):
@@ -2298,7 +2330,7 @@ class FuzzFifo(unittest.TestCase):
                     self.assertEqual(b.month_index(text) - b.month_index(start),
                                      round(max(months, 0.0)))
                 else:
-                    self.assertEqual(text, b.fmt_months_short(months))
+                    self.assertEqual(text, b.fmt_duration(months))
 
     def test_months_to_chance_inverts_sweep_chance(self):
         rng = random.Random(20261025)

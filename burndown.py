@@ -45,8 +45,8 @@ each settled cohort's own monthly clearance, a 0 (random) to 1 (oldest-first)
 score, and months until COHORT (default 2025-07) is likely processed under a
 model of an oldest-first sweep on top of a steady age-blind background.
 
-Add --dates to either to show those times as the month (YYYY-MM) they come to,
-counted from the latest period, instead of as months from it.
+Those times are the month (YYYY-MM) they come to, counted from the latest
+period; add --durations to either to show how long from it instead (1y 5m).
 """
 
 import argparse
@@ -851,7 +851,7 @@ def analyze(entered: list[float], width: int | None = None,
 # --summarize and --fifo cover every tracked cohort from this application month on.
 SUMMARY_FROM = "2025-01"
 
-# Widest a summary count or month cell gets; fmt_count / fmt_months_short
+# Widest a summary count or month cell gets; fmt_count / fmt_duration
 # degrade to e-notation rather than grow past it.
 SUMMARY_CELL = 7
 
@@ -862,41 +862,49 @@ def fmt_count(value: float) -> str:
     return text if len(text) <= SUMMARY_CELL else f"{value:.0e}"
 
 
-def fmt_months_short(months: float) -> str:
+def fmt_duration(months: float) -> str:
     """
-    Whole months followed by "m", in at most SUMMARY_CELL characters:
-    "13m", "<1m" under a month, "never" for inf. The inputs are too rough
-    for tenths of a month to mean anything.
+    Whole months as years and months, in at most SUMMARY_CELL characters:
+    "5m", "1y", "1y 5m", "<1m" under a month, "never" for inf. The inputs
+    are too rough for tenths of a month to mean anything. Past "99y 11m"
+    the months are dropped, and past what fits the years go to e-notation.
     """
     if months == float("inf"):
         return "never"
     if months < 1:
         return "<1m"
-    text = f"{months:,.0f}m"
-    return text if len(text) <= SUMMARY_CELL else f"{months:.0e}m"
+    years, rest = divmod(round(months), 12)
+    if not years:
+        return f"{rest}m"
+    text = f"{years:,}y" + (f" {rest}m" if rest else "")
+    if len(text) <= SUMMARY_CELL:
+        return text
+    text = f"{years:,}y"
+    return text if len(text) <= SUMMARY_CELL else f"{years:.0e}y"
 
 
-# With --dates, the period --summarize and --fifo count their times from, so
-# fmt_when() shows the month a time comes to; None shows months from now.
+# The period --summarize and --fifo count their times from, so fmt_when()
+# shows the month a time comes to; None (--durations, and the widget) shows
+# how long from now.
 DATES_FROM: str | None = None
 
 
 def fmt_when(months: float) -> str:
     """
-    fmt_months_short(), or with DATES_FROM set the YYYY-MM month that many
+    fmt_duration(), or with DATES_FROM set the YYYY-MM month that many
     (rounded) months after it: "2028-04". Past what fits in SUMMARY_CELL
-    (the year 10000) it falls back to months, and inf is "never" either way.
+    (the year 10000) it falls back to a duration, and inf is "never" either way.
     """
     if DATES_FROM is None or not math.isfinite(months):
-        return fmt_months_short(months)
+        return fmt_duration(months)
     text = month_label(month_index(DATES_FROM) + round(max(months, 0.0)))
-    return text if len(text) <= SUMMARY_CELL else fmt_months_short(months)
+    return text if len(text) <= SUMMARY_CELL else fmt_duration(months)
 
 
 def times_note(last: str) -> str:
-    """How the estimate times read: months from `last`, or (--dates) a month."""
+    """How the estimate times read: a month, or (--durations) how long from `last`."""
     if DATES_FROM is None:
-        return f"All times are months from {last}"
+        return f"All times are how long from {last}, in years and months"
     return (f"All times are shown as the month (YYYY-MM) they come to, counted "
             f"from {last}")
 
@@ -2091,12 +2099,12 @@ def parse_args(argv) -> argparse.Namespace:
         help=f"no prompt: how close to oldest-first processing is, and when "
              f"COHORT (default {DEFAULT_COHORT}) is likely to be processed")
     parser.add_argument(
-        "--dates", action="store_true",
-        help="with --summarize or --fifo: show each time as the month "
-             "(YYYY-MM) it comes to rather than months from the latest period")
+        "--durations", action="store_true",
+        help="with --summarize or --fifo: show each time as how long from the "
+             "latest period (1y 5m) rather than the month (YYYY-MM) it comes to")
     args = parser.parse_args(list(argv))
-    if args.dates and not (args.summarize or args.fifo):
-        parser.error("--dates needs --summarize or --fifo")
+    if args.durations and not (args.summarize or args.fifo):
+        parser.error("--durations needs --summarize or --fifo")
     return args
 
 
@@ -2104,10 +2112,10 @@ def print_report(args: argparse.Namespace,
                  cohorts: dict[str, list[tuple[str, float]]], width: int) -> bool:
     """
     The report --summarize and/or --fifo asked for; False if neither did.
-    With --dates, DATES_FROM is the latest period while it prints.
+    Unless --durations, DATES_FROM is the latest period while it prints.
     """
     global DATES_FROM
-    DATES_FROM = latest_period(cohorts) if args.dates and cohorts else None
+    DATES_FROM = None if args.durations or not cohorts else latest_period(cohorts)
     try:
         if args.summarize:
             print_fifo_summary(cohorts, width, args.fifo or DEFAULT_COHORT)

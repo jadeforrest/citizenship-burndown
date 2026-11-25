@@ -108,8 +108,8 @@ prints:
   `ESTIMATE_ODDS` (50%, 75%, 90%, under `ESTIMATE_HEADS`) — from
   `sweep_chance`: the trickle compounding, an oldest-first sweep, and the
   leftovers it leaves clearing at the leftover rate. The 50% is about when
-  the sweep finishes with the cohort. `fmt_months_short` rounds to whole
-  months with an `m` (`13m`, `<1m` under one): the inputs are too rough for tenths.
+  the sweep finishes with the cohort. `fmt_duration` rounds to whole
+  months, as years and months (`1y 1m`, `<1m` under one): the inputs are too rough for tenths.
 
 There is one sweep, so there is one pace for every cohort (`sweep_pace`):
 the clearance over the window of everyone it hadn't passed when the window
@@ -195,12 +195,15 @@ a bracketed low-high range over the last four windows, and `--fifo` a "best
 been the most accurate. Only the recent pace is used because it
 backtested closest: from 2026-05 and 2026-08 cutoffs, median paces (which
 still hold the fast early-2026 months) over-predicted clearance badly.
-`--summarize --fifo COHORT` just bolds COHORT's rows. `--dates` (with
-`--summarize` or `--fifo`, an error alone) shows every time as the month it
-comes to instead (`fmt_when`: the latest period plus the rounded months,
-`2028-04` for 17m from 2026-11; `never` stays, and past year 9999 it falls
-back to months). `print_report` sets the module-level `DATES_FROM` only while
-the report prints, so the widget feed, which shares `split_cells`, keeps months. Both tables go through
+`--summarize --fifo COHORT` just bolds COHORT's rows. Times show as the
+month they come to by default (`fmt_when`: the latest period plus the
+rounded months, `2028-04` for 17m from 2026-11; `never` stays, and past year
+9999 it falls back to a duration). `--durations` (with `--summarize` or
+`--fifo`, an error alone) shows how long instead, as `fmt_duration` years and
+months (`1y 5m`, `11m`, `2y`; past `99y 11m` just the years). `print_report`
+sets the module-level `DATES_FROM` only while the report prints, so code
+called directly (the tests, and the widget feed, which shares `split_cells`)
+gets durations. Both tables go through
 `print_columns` (about 55 and 70 columns on today's data); narrower, the
 counts become a sentence per cohort (`summary_lead_text`) and the estimates
 a heading per cohort with a line per cell. In `--fifo`'s estimate rows, too
