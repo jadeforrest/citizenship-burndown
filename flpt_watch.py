@@ -284,6 +284,13 @@ def record_history(data: dict, observed_at: datetime,
     return pending
 
 
+def write_widget() -> bool:
+    """burndown.write_widget() on the history; imported here so a broken
+    burndown can't stop the watcher loading."""
+    import burndown
+    return burndown.write_widget(HISTORY_PATH)
+
+
 def check_once(state: dict) -> dict:
     data = fetch()
     last_updated = section(data, "default-update").get("flpt_lastupdated")
@@ -311,6 +318,12 @@ def check_once(state: dict) -> dict:
         print(f"[{now}] history: {len(written)} row(s) appended to {HISTORY_PATH.name}")
     except Exception as e:
         print(f"[{now}] history: not recorded: {e!r}", file=sys.stderr)
+
+    # Like history, the widget mustn't stop the state being saved.
+    try:
+        print(f"[{now}] widget: {'written' if write_widget() else 'skipped'}")
+    except Exception as e:
+        print(f"[{now}] widget: not written: {e!r}", file=sys.stderr)
 
     state["flpt_lastupdated"] = last_updated
     state["people_ahead"] = people_ahead

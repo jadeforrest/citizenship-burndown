@@ -16,6 +16,7 @@ this stays a fast pre-commit check. Crank it for a longer campaign with:
 import contextlib
 import csv
 import io
+import json
 import math
 import os
 import random
@@ -1848,6 +1849,53 @@ after its bulge yet.
         self.assertEqual(rows[1].split, ("never", "never", "-", "-"))
         # Leftover shows only where the sweep is in or past the cohort.
         self.assertEqual([r.leftover for r in rows], ["50%", "", ""])
+
+
+class Widget(unittest.TestCase):
+    def test_cell_splits_the_band(self):
+        self.assertEqual(b.widget_cell("Sweep done", "22m (22-54m)"),
+                         {"label": "Sweep done", "value": "22m", "detail": "22-54m"})
+        self.assertEqual(b.widget_cell("x", "now"),
+                         {"label": "x", "value": "now", "detail": ""})
+
+    def test_feed_matches_the_summary_row(self):
+        names = b.settled_cohorts(FIFO_COHORTS)
+        last = b.latest_period(FIFO_COHORTS)
+        target = names[1]
+        row = next(r for r in b.fifo_summary_rows(
+            FIFO_COHORTS, names, last, b.recent_rates(FIFO_COHORTS, names, last))
+            if r.cohort == target)
+        feed = b.widget_feed(FIFO_COHORTS, target)
+        self.assertEqual(feed["title"], f"Citizenship {target}")
+        self.assertEqual(feed["period"], last)
+        self.assertEqual([r["label"] for r in feed["rows"]],
+                         ["Sweep arrives", "Sweep done", "If left, half by"])
+        cells = dict(zip(b.SPLIT_HEADS, row.split))
+        self.assertEqual([b.widget_cell("", cells[h])["value"] for h in
+                          ("arrives", "sweep ends", "if left, half by")],
+                         [r["value"] for r in feed["rows"]])
+
+    def test_no_feed_for_an_unsettled_or_unlisted_cohort(self):
+        self.assertIsNone(b.widget_feed(FIFO_COHORTS, "2019-01"))
+        self.assertIsNone(b.widget_feed({}, "2025-07"))
+        first = b.settled_cohorts(FIFO_COHORTS)[0]
+        with unittest.mock.patch.object(b, "fifo_summary_rows", return_value=[]):
+            self.assertIsNone(b.widget_feed(FIFO_COHORTS, first))
+
+    def test_write_widget_writes_or_skips(self):
+        target = b.settled_cohorts(FIFO_COHORTS)[0]
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch.object(b, "load_cohorts", return_value=FIFO_COHORTS):
+            out = Path(d) / "w.json"
+            self.assertTrue(b.write_widget(Path(d) / "h.csv", out, target))
+            self.assertEqual(json.loads(out.read_text()),
+                             b.widget_feed(FIFO_COHORTS, target))
+            self.assertEqual([p.name for p in Path(d).iterdir()], ["w.json"])
+            self.assertFalse(b.write_widget(Path(d) / "h.csv",
+                                            Path(d) / "missing" / "w.json", target))
+            self.assertFalse(b.write_widget(Path(d) / "h.csv", out, "2019-01"))
+            with unittest.mock.patch.object(b, "WIDGET_PATH", Path(d) / "x" / "w.json"):
+                self.assertFalse(b.write_widget(Path(d) / "h.csv", cohort=target))
 
 
 class MainFifo(unittest.TestCase):

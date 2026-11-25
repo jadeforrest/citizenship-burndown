@@ -215,6 +215,14 @@ class RecordHistory(unittest.TestCase):
         self.assertEqual(burndown.missing_months([p for p, _ in series]), [])
 
 
+def setUpModule():
+    # check_once writes the widget; keep it off the real iCloud folder.
+    patcher = unittest.mock.patch.object(
+        burndown, "WIDGET_PATH", Path(tempfile.gettempdir()) / "no-such-dir-flpt" / "w.json")
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class CheckOnce(unittest.TestCase):
     def _run(self, state: dict, data: dict | None = None,
              history_error: Exception | None = None):
@@ -241,6 +249,22 @@ class CheckOnce(unittest.TestCase):
             self.assertEqual(w.load_state(), out)
         self.err = err.getvalue()
         return out, beep, notify
+
+    def test_widget_failure_still_saves_state_and_notifies_once(self):
+        with unittest.mock.patch.object(w, "write_widget",
+                                        side_effect=OSError("full")):
+            state, _, notify = self._run({"flpt_lastupdated": "August 1, 2026"})
+        self.assertEqual(state["flpt_lastupdated"], "September 3, 2026")
+        notify.assert_called_once()
+        self.assertIn("widget: not written: OSError('full')", self.err)
+
+    def test_widget_is_written_from_the_history(self):
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch.object(burndown, "write_widget",
+                                           return_value=True) as ww, \
+                unittest.mock.patch.object(w, "HISTORY_PATH", Path(d) / "h.csv"):
+            self.assertTrue(w.write_widget())
+        ww.assert_called_once_with(Path(d) / "h.csv")
 
     def test_history_failure_still_saves_state_and_notifies_once(self):
         state, beep, notify = self._run({"flpt_lastupdated": "August 1, 2026"},

@@ -326,6 +326,18 @@ The watcher runs hourly under launchd as `com.jade.flpt-watch`
 launchctl bootout gui/$(id -u)/com.jade.flpt-watch; ~/Developer/ops/install-all.sh
 ```
 
+### iPhone widget
+
+`check_once` also calls `write_widget` (after history, before the state is saved, and like history a failure is only logged).
+`burndown.write_widget` writes `widget_feed(DEFAULT_COHORT)` to `WIDGET_PATH`, which is
+`citizenship.json` in Scriptable's iCloud folder, and skips the write when that folder doesn't exist.
+The feed holds the cohort's `--summarize` cells for `WIDGET_FIELDS` (arrives, sweep ends,
+if left half by), each split by `widget_cell` into the value and its band.
+[scriptable/citizenship.js](scriptable/citizenship.js) draws them. To install it, copy it to
+`~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/Documents/Citizenship.js`, then add
+a Scriptable widget on the iPhone and pick that script. The tests patch `burndown.WIDGET_PATH`,
+so they never write to iCloud.
+
 ## Code structure
 
 ### flpt_watch.py

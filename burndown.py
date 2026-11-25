@@ -48,6 +48,7 @@ model of an oldest-first sweep on top of a steady age-blind background.
 
 import argparse
 import csv
+import json
 import math
 import os
 import re
@@ -55,6 +56,7 @@ import shutil
 import statistics
 import sys
 import textwrap
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -1977,6 +1979,59 @@ def print_fifo_summary(cohorts: dict[str, list[tuple[str, float]]], width: int,
         print(paint("Estimates:", "bold"))
         print_split(rows, width, target)
     print(paint("=" * width, "cyan") + "\n")
+
+
+# The iPhone widget (scriptable/citizenship.js) reads this; flpt_watch writes it
+# hourly, but only once Scriptable's iCloud folder exists.
+WIDGET_PATH = Path("~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/"
+                   "Documents/citizenship.json").expanduser()
+# The SPLIT_HEADS the widget shows, and what it calls them.
+WIDGET_FIELDS = (("arrives", "Sweep arrives"), ("sweep ends", "Sweep done"),
+                 ("if left, half by", "If left, half by"))
+
+
+def widget_cell(label: str, cell: str) -> dict:
+    """A split_cells() cell like "17m (17-44m)" as {label, value: 17m, detail: 17-44m}."""
+    value, _, band = cell.partition(" (")
+    return {"label": label, "value": value, "detail": band.rstrip(")")}
+
+
+def widget_feed(cohorts: dict[str, list[tuple[str, float]]],
+                cohort: str = DEFAULT_COHORT) -> dict | None:
+    """
+    `cohort`'s --summarize estimates as the widget's JSON: a title, the period
+    they're from, and one row per WIDGET_FIELDS. None if it isn't settled or
+    has no figure for the latest period.
+    """
+    names = settled_cohorts(cohorts)
+    if cohort not in names:
+        return None
+    last = latest_period(cohorts)
+    rows = fifo_summary_rows(cohorts, names, last, recent_rates(cohorts, names, last))
+    row = next((r for r in rows if r.cohort == cohort), None)
+    if row is None:
+        return None
+    cells = dict(zip(SPLIT_HEADS, row.split))
+    return {"version": 1, "title": f"Citizenship {cohort}", "period": last,
+            "rows": [widget_cell(label, cells[head]) for head, label in WIDGET_FIELDS]}
+
+
+def write_widget(history: Path = HISTORY_PATH, path: Path | None = None,
+                 cohort: str = DEFAULT_COHORT) -> bool:
+    """
+    Write widget_feed() to `path` (WIDGET_PATH, read at call time so tests
+    can patch it) atomically. False, writing nothing, when the folder
+    doesn't exist (Scriptable isn't set up) or there's no feed.
+    """
+    path = path or WIDGET_PATH
+    feed = widget_feed(load_cohorts(history), cohort)
+    if feed is None or not path.parent.is_dir():
+        return False
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(feed, f, indent=1)
+    os.replace(tmp, path)
+    return True
 
 
 def print_cohort_menu(cohorts: dict, menu: list[str], width: int) -> None:
