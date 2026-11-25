@@ -31,26 +31,12 @@ from pathlib import Path
 import burndown as b
 
 
-def chrono_to_processed(chrono: list[float]) -> list[float]:
-    """Same month-over-month diff analyze() does, for building test inputs."""
-    return [chrono[i] - chrono[i + 1] for i in range(len(chrono) - 1)]
-
-
 # Pin a width for the assertions that read the report as text: the layout is
 # terminal-dependent now, and a test that renders at whatever size the runner's
 # terminal happens to be is a test that fails on someone else's machine.
-WIDE = b.WIDE_TABLE
-COMPACT = b.COMPACT_TABLE
+WIDE = b.MAX_WIDTH
+COMPACT = 80
 STACKED = b.MIN_WIDTH
-
-
-def run_analyze(entered: list[float], width: int = WIDE,
-                own: "b.OwnCohort | None" = None) -> str:
-    """Call analyze() and capture what it printed."""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        b.analyze(entered, width, own)
-    return buf.getvalue()
 
 
 # The 2025-07 cohort and the 2025-08 cohort behind it, as recorded for
@@ -66,185 +52,13 @@ JULY_OWN = b.own_cohort(JULY_COHORTS, "2025-07")
 JULY_ENTERED = list(reversed(JULY))
 
 
-class ParseNumbers(unittest.TestCase):
-    def test_commas_and_whitespace(self):
-        self.assertEqual(b.parse_numbers("1, 2,3  4"), [1.0, 2.0, 3.0, 4.0])
-
-    def test_pipes_and_tabs_are_separators(self):
-        self.assertEqual(b.parse_numbers("1|2\t3"), [1.0, 2.0, 3.0])
-
-    def test_trailing_separators_ignored(self):
-        self.assertEqual(b.parse_numbers("1, 2, "), [1.0, 2.0])
-
-    def test_empty_input(self):
-        self.assertEqual(b.parse_numbers("   "), [])
-
-    def test_floats_and_negatives(self):
-        self.assertEqual(b.parse_numbers("-1.5, 2.25"), [-1.5, 2.25])
-
-    def test_non_numeric_raises(self):
-        with self.assertRaises(ValueError):
-            b.parse_numbers("1, banana, 3")
-
-
-class ExtractBacklog(unittest.TestCase):
-    def test_two_column_paste_is_split(self):
-        values, dropped, mode = b.extract_backlog(
-            [1, 2600, 1, 2700, 2, 7800, 3, 9000]
-        )
-        self.assertEqual(values, [2600, 2700, 7800, 9000])
-        self.assertEqual(dropped, [1, 1, 2, 3])
-        self.assertIn("two-column", mode)
-
-    def test_genuine_single_column_is_not_halved(self):
-        # The ratio guard exists for exactly this: an ascending single column
-        # where each value happens to be smaller than the next.
-        data = [10200.0, 10500.0, 11300.0, 11700.0]
-        values, dropped, mode = b.extract_backlog(data)
-        self.assertEqual(values, data)
-        self.assertEqual(dropped, [])
-        self.assertEqual(mode, "single column")
-
-    def test_ratio_guard_needs_a_wide_margin(self):
-        # Every marker is smaller than its pair here, so only the 5x ratio
-        # guard stops this noisy single column from being silently halved.
-        data = [100.0, 500.0, 200.0, 600.0]
-        self.assertEqual(b.extract_backlog(data)[0], data)
-
-    def test_ratio_guard_boundary_pairs_at_exactly_5x(self):
-        values, dropped, mode = b.extract_backlog([1.0, 5.0, 1.0, 6.0])
-        self.assertEqual(values, [5.0, 6.0])
-        self.assertEqual(dropped, [1.0, 1.0])
-        self.assertIn("two-column", mode)
-
-    def test_odd_length_left_alone(self):
-        data = [1.0, 2600.0, 1.0]
-        self.assertEqual(b.extract_backlog(data)[0], data)
-
-    def test_too_short_left_alone(self):
-        data = [1.0, 2600.0]
-        self.assertEqual(b.extract_backlog(data)[0], data)
-
-    def test_marker_not_smaller_blocks_pairing(self):
-        # 9000 > 8000 breaks the all(m < v) requirement.
-        data = [1.0, 2600.0, 9000.0, 8000.0]
-        self.assertEqual(b.extract_backlog(data)[0], data)
-
-
-class MonthlyOdds(unittest.TestCase):
-    def test_fraction_of_cohort_cleared(self):
-        chrono = [1000.0, 900.0, 800.0]
-        odds = b.monthly_odds(chrono, chrono_to_processed(chrono))
-        self.assertAlmostEqual(odds[0], 100 / 1000)
-        self.assertAlmostEqual(odds[1], 100 / 900)
-
-    def test_growing_month_is_none(self):
-        chrono = [1000.0, 1200.0]
-        self.assertEqual(b.monthly_odds(chrono, chrono_to_processed(chrono)), [None])
-
-    def test_flat_month_is_none(self):
-        chrono = [1000.0, 1000.0]
-        self.assertEqual(b.monthly_odds(chrono, chrono_to_processed(chrono)), [None])
-
-    def test_non_positive_start_is_none(self):
-        self.assertEqual(b.monthly_odds([0.0, -50.0], [50.0]), [None])
-
-    def test_clamped_at_one(self):
-        # Queue cleared entirely (and then some) in one month.
-        self.assertEqual(b.monthly_odds([100.0, -20.0], [120.0]), [1.0])
-
-    def test_length_matches_processed(self):
-        chrono = [500.0, 400.0, 450.0, 300.0]
-        odds = b.monthly_odds(chrono, chrono_to_processed(chrono))
-        self.assertEqual(len(odds), 3)
-
-
-class DoneBy(unittest.TestCase):
-    def test_linear_growth(self):
-        self.assertAlmostEqual(b.done_by(1000, 100, 3), 0.3)
-        self.assertAlmostEqual(b.done_by(1000, 100, 6), 0.6)
-
-    def test_clamped_at_one(self):
-        self.assertEqual(b.done_by(1000, 100, 10), 1.0)
-        self.assertEqual(b.done_by(1000, 100, 50), 1.0)
-
-    def test_zero_and_negative_rate(self):
-        self.assertIsNone(b.done_by(1000, 0, 12))
-        self.assertIsNone(b.done_by(1000, -50, 12))
-
-    def test_non_positive_backlog(self):
-        self.assertIsNone(b.done_by(0, 100, 12))
-
-    def test_agrees_with_quantile_table(self):
-        # The two sections are inverses of each other: the time the scenario
-        # table reports for quantile q must be the time at which done_by()
-        # reports probability q. If these ever drift apart, the report is
-        # telling the user two different stories.
-        current, rate = 10500.0, 933.0
-        for q in b.QUANTILES:
-            months = current * q / rate
-            self.assertAlmostEqual(b.done_by(current, rate, months), q, places=9)
-
-
 class Formatting(unittest.TestCase):
     def test_fmt_pct(self):
         self.assertEqual(b.fmt_pct(0.0294), "2.9%")
         self.assertEqual(b.fmt_pct(1.0), "100.0%")
 
-    def test_fmt_months_infinite(self):
-        self.assertEqual(b.fmt_months(float("inf")), "never (rate <= 0)")
-
-    def test_fmt_months_cells_fit_the_column(self):
-        # Both tables line their columns up by padding to CELL; anything wider
-        # silently breaks the alignment.
-        for months in (0.0, 0.5, 9.9, 99.9, 999.9, float("inf")):
-            self.assertLessEqual(len(b.fmt_months(months)), b.CELL, months)
-
-    def test_fmt_months_cells_fit_for_absurd_values(self):
-        # Negative months (a negative backlog) and enormous ones (a rate barely
-        # above zero) reach the formatters too, and used to overflow the cell.
-        for months in (-0.5, -1234.5, 1e5, 1e12, 0.0001):
-            self.assertLessEqual(len(b.fmt_months(months)), b.CELL, months)
-            self.assertLessEqual(
-                len(b.fmt_months_compact(months)), b.CELL_COMPACT, months
-            )
-
-    def test_quantile_header_has_a_cell_per_quantile(self):
-        header = b.quantile_header("")
-        self.assertEqual(
-            len(header), len(b.QUANTILES) * b.CELL + (len(b.QUANTILES) - 1)
-        )
-
-    def test_compact_header_has_a_cell_per_quantile(self):
-        header = b.quantile_header("", b.CELL_COMPACT)
-        self.assertEqual(
-            len(header),
-            len(b.QUANTILES) * b.CELL_COMPACT + (len(b.QUANTILES) - 1),
-        )
-
-    def test_fmt_months_compact_cells_fit_the_column(self):
-        for months in (0.0, 0.5, 9.9, 99.9, 999.9, float("inf")):
-            self.assertLessEqual(
-                len(b.fmt_months_compact(months)), b.CELL_COMPACT, months
-            )
-
-    def test_fmt_months_compact_keeps_both_figures(self):
-        # Abbreviated, but still months *and* years — narrow terminals get the
-        # same information, not less of it.
-        self.assertEqual(b.fmt_months_compact(6.0), "  6.0mo 0.50y")
-        self.assertEqual(b.fmt_months_compact(18.0), " 18.0mo 1.5y")
-        self.assertEqual(b.fmt_months_compact(float("inf")), "never")
-
 
 class Widths(unittest.TestCase):
-    DATA = [9700.0, 10200, 10500, 11300, 11700, 13000, 14500, 15800]
-
-    def test_layout_thresholds(self):
-        self.assertEqual(b.layout_for(WIDE), "wide")
-        self.assertEqual(b.layout_for(WIDE - 1), "compact")
-        self.assertEqual(b.layout_for(COMPACT), "compact")
-        self.assertEqual(b.layout_for(COMPACT - 1), "stacked")
-
     def test_output_width_honours_the_env_override(self):
         with unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "72"}):
             self.assertEqual(b.output_width(), 72)
@@ -255,127 +69,24 @@ class Widths(unittest.TestCase):
             self.assertEqual(b.output_width(), b.MIN_WIDTH)
         with unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": "500"}):
             self.assertEqual(b.output_width(), b.MAX_WIDTH)
+        # Without the override, the terminal's own width, clamped the same way.
+        with unittest.mock.patch.dict(os.environ, {"BURNDOWN_WIDTH": ""}), \
+                unittest.mock.patch.object(b.shutil, "get_terminal_size",
+                                           return_value=os.terminal_size((90, 24))):
+            self.assertEqual(b.output_width(), 90)
 
-    def test_nothing_overflows_at_any_width(self):
-        # The whole point of the narrow layouts: no line may run past the
-        # terminal, or it wraps and the columns stop lining up.
-        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
-            out = run_analyze(self.DATA, width)
-            longest = max(len(line) for line in out.splitlines())
-            self.assertLessEqual(longest, width, f"width={width}")
-
-    def test_narrow_widths_are_clamped_not_broken(self):
-        # Asking for 10 columns can't be honoured; it must still render.
-        out = run_analyze(self.DATA, 10)
-        longest = max(len(line) for line in out.splitlines())
-        self.assertLessEqual(longest, b.MIN_WIDTH)
-
-    def test_prose_stays_readable_on_wide_terminals(self):
-        # Tables use the whole terminal; paragraphs stop at PROSE_WIDTH, or a
-        # 117-column window turns the explanations into unreadable ribbons.
-        out = run_analyze(self.DATA, b.MAX_WIDTH)
-        prose = [ln for ln in out.splitlines()
-                 if "random processing order" in ln or "strict FIFO" in ln]
-        self.assertTrue(prose)
-        for line in prose:
-            self.assertLessEqual(len(line), b.PROSE_WIDTH)
-
-    def test_exact_fit_keeps_the_roomier_form(self):
-        # Off-by-one here silently downgrades a layout that actually fits.
-        padded = b.stat_line("Label", "value", width=1000)
-        self.assertEqual(b.stat_line("Label", "value", len(padded)), padded)
-        # The look-back table's spelled-out headings need exactly 57 columns
-        # for this data; at 57 they must still be chosen, at 56 abbreviated.
-        self.assertIn("queue at start", run_analyze(self.DATA, 57))
-        self.assertNotIn("queue at start", run_analyze(self.DATA, 56))
-
-    def test_every_layout_keeps_every_number(self):
-        # Same figures at every width — narrow reshapes the report, it doesn't
-        # drop rows or columns from it.
-        for width in (WIDE, COMPACT, STACKED):
-            out = run_analyze(self.DATA, width)
-            with self.subTest(width=width):
-                for q in b.QUANTILES:
-                    self.assertIn(f"{q * 100:.0f}% done", out)
-                for months in ("1.8", "3.6", "5.3", "7.1"):   # fast +1 sigma
-                    self.assertIn(months, out)
-                for h in b.HORIZONS[1:]:
-                    self.assertIn(f"{h} months", out)
-                self.assertIn("next month", out)
-                # One look-back row per month of throughput.
-                for age in range(1, len(self.DATA)):
-                    self.assertIn(f"-{age}", out)
-                self.assertIn("9.0%", out)      # done_by, average pace
-                self.assertIn("Median", out)
-                self.assertIn("Trend", out)
+    def test_stat_line_wraps_when_even_the_tight_form_wont_fit(self):
+        line = b.stat_line("A long label here", "1.4% a month", 20)
+        self.assertEqual(line, "A long label here:\n  1.4% a month")
 
 
-class AnalyzeOutput(unittest.TestCase):
-    def test_needs_two_months(self):
-        self.assertIn("at least two months", run_analyze([10200.0]))
-
-    def test_reports_last_month_odds(self):
-        out = run_analyze([10200.0, 10500.0])
-        # 300 of 10,500 cleared.
-        self.assertIn("2.9% chance of being processed", out)
-
-    def test_growing_queue_is_flagged(self):
-        out = run_analyze([12000.0, 11000.0, 10000.0])
-        self.assertIn("queue is GROWING", out)
-        self.assertIn("the queue grew", out)
-        self.assertIn("never", out)
-
-    def test_flat_queue_wording(self):
-        out = run_analyze([5000.0, 5000.0, 5000.0])
-        self.assertIn("didn't move", out)
-        self.assertNotIn("the queue grew", out)
-
-    def test_singular_month_wording(self):
-        out = run_analyze([1000.0, 900.0, 1200.0, 800.0])
-        self.assertIn("Across the 1 month where", out)
-
-    def test_plural_month_wording(self):
-        out = run_analyze([800.0, 900.0, 1000.0])
-        self.assertIn("Across the 2 months where", out)
-
-    def test_last_month_marker_is_on_the_newest_row(self):
-        out = run_analyze([10200.0, 10500.0, 11300.0, 11700.0])
-        marked = [ln for ln in out.splitlines() if "<- last month" in ln]
-        self.assertEqual(len(marked), 1, out)
-        # The marker has to sit on the -1 row; on any other row it mislabels
-        # which month the headline percentage came from.
-        self.assertEqual(marked[0].split()[0], "-1")
-        self.assertIn("10,500", marked[0])
-
-    def test_all_horizons_present(self):
-        out = run_analyze([10200.0, 10500.0, 11300.0, 11700.0])
-        self.assertIn("next month", out)
-        for h in b.HORIZONS[1:]:
-            self.assertIn(f"{h} months", out)
-
-
-    def test_default_input_is_analyzable(self):
-        # main() feeds DEFAULT_INPUT back through the parser when you press
-        # return, so it has to survive the same path a paste does — and it's
-        # meant to be edited, so this catches a typo'd replacement too.
-        numbers, dropped, mode = b.extract_backlog(
-            b.parse_numbers(b.DEFAULT_INPUT)
-        )
-        self.assertEqual(dropped, [])
-        self.assertEqual(mode, "single column")
-        self.assertGreaterEqual(len(numbers), 2)
-        self.assertIn("BURN-DOWN ANALYSIS", run_analyze(numbers))
-
-
-def run_main(typed: str, history: Path, argv: tuple[str, ...] = ("--interactive",),
-             **env: str) -> str:
-    """Run main() with `typed` at the prompt and `history` as the watcher CSV."""
+def run_main(history: Path, argv: tuple[str, ...] = (), **env: str) -> str:
+    """Run main() with `history` as the watcher CSV."""
     buf = io.StringIO()
     # Blank NO_COLOR/FORCE_COLOR so the developer's own shell can't switch
     # colour on; patching COLOR restores it after main() sets it.
     env = {"BURNDOWN_WIDTH": "100", "NO_COLOR": "", "FORCE_COLOR": "", **env}
-    with unittest.mock.patch("builtins.input", return_value=typed), \
-            unittest.mock.patch.object(b, "HISTORY_PATH", history), \
+    with unittest.mock.patch.object(b, "HISTORY_PATH", history), \
             unittest.mock.patch.object(b, "COLOR", False), \
             unittest.mock.patch.dict(os.environ, env), \
             contextlib.redirect_stdout(buf):
@@ -390,47 +101,6 @@ def write_history(directory: str, body: str) -> Path:
     path = Path(directory) / "flpt_history.csv"
     path.write_text(HEADER + body)
     return path
-
-
-class MainDefaults(unittest.TestCase):
-    """No watcher history: the prompt behaves as it always did."""
-
-    def _run_main(self, typed: str) -> str:
-        with tempfile.TemporaryDirectory() as d:
-            return run_main(typed, Path(d) / "missing.csv")
-
-    def test_empty_line_uses_the_default(self):
-        out = self._run_main("")
-        self.assertIn("Using the default", out)
-        expected = b.parse_numbers(b.DEFAULT_INPUT)
-        self.assertIn(f"{expected[0]:,.0f}", out)
-        self.assertIn(f"{len(expected):>10d}", out)
-
-    def test_whitespace_only_counts_as_empty(self):
-        self.assertIn("Using the default", self._run_main("   "))
-
-    def test_eof_cancels(self):
-        with tempfile.TemporaryDirectory() as d, \
-                unittest.mock.patch("builtins.input", side_effect=EOFError), \
-                unittest.mock.patch.object(b, "HISTORY_PATH", Path(d) / "x.csv"), \
-                contextlib.redirect_stdout(io.StringIO()) as buf:
-            b.main(["--interactive"])
-        self.assertIn("Cancelled.", buf.getvalue())
-        self.assertNotIn("BURN-DOWN", buf.getvalue())
-
-    def test_unreadable_input_exits(self):
-        with self.assertRaises(SystemExit) as ctx:
-            self._run_main("12, abc")
-        self.assertEqual(ctx.exception.code, 1)
-
-    def test_paired_input_reports_what_was_dropped(self):
-        out = self._run_main("1 2600 1 2700 2 7800")
-        self.assertIn("Ignored: 1, 1, 2", out)
-
-    def test_typed_input_wins_over_the_default(self):
-        out = self._run_main("500, 900, 1400")
-        self.assertNotIn("Using the default", out)
-        self.assertIn("500", out)
 
 
 class LoadCohorts(unittest.TestCase):
@@ -507,37 +177,6 @@ class MonthKey(unittest.TestCase):
             self.assertIsNone(b.month_key(raw), raw)
 
 
-class CohortHelpers(unittest.TestCase):
-    def test_missing_months_across_a_year_boundary(self):
-        self.assertEqual(b.missing_months(["2026-02", "2025-11", "2025-12"]),
-                         ["2026-01"])
-
-    def test_no_gaps(self):
-        self.assertEqual(b.missing_months(["2026-09", "2026-08"]), [])
-
-    def test_menu_needs_two_months(self):
-        cohorts = {"a": [("2026-09", 1)], "b": [("2026-09", 1), ("2026-08", 2)]}
-        self.assertEqual(b.cohort_menu(cohorts), ["b"])
-
-    def test_pick_by_number_name_or_slash(self):
-        cohorts = {"2025-07": [], "2025-08": []}
-        menu = ["2025-07", "2025-08"]
-        self.assertEqual(b.pick_cohort("1", cohorts, menu), "2025-07")
-        self.assertEqual(b.pick_cohort("2", cohorts, menu), "2025-08")
-        self.assertEqual(b.pick_cohort(" 2025-07 ", cohorts, menu), "2025-07")
-        self.assertEqual(b.pick_cohort("2025/08", cohorts, menu), "2025-08")
-
-    def test_pick_falls_through_to_numbers(self):
-        cohorts = {"2025-07": []}
-        menu = ["2025-07"]
-        for raw in ("0", "2", "9700, 10200", "2025-09", ""):
-            self.assertIsNone(b.pick_cohort(raw, cohorts, menu), raw)
-
-    def test_describe_singular(self):
-        self.assertIn("1 month of data",
-                      b.describe_cohort("x", [("2026-09", 5.0)]))
-
-
 class OwnCohortRates(unittest.TestCase):
     def test_month_index_round_trips_across_years(self):
         for i in range(2019 * 12, 2031 * 12):
@@ -567,67 +206,12 @@ class OwnCohortRates(unittest.TestCase):
         for args in ((0, 10, 1), (-5, 10, 1), (10, -1, 1), (10, 5, 0)):
             self.assertIsNone(b.shrink_rate(*args), args)
 
-    def test_windows_shortest_first_full_span_last(self):
-        rows = b.own_windows(JULY_OWN)
-        self.assertEqual([n for n, _, _ in rows], [3, 6, 9])
-        rates = {n: (round(mine, 4), round(theirs, 4)) for n, mine, theirs in rows}
-        self.assertEqual(rates[3], (0.0, round(1 - (9300 / 10200) ** (1 / 3), 4)))
-        self.assertEqual(rates[6][0], round(1 - (2200 / 2300) ** (1 / 6), 4))
-        self.assertEqual(rates[9], (0.0141, 0.0572))
-
-    def test_short_span_gives_only_the_full_window(self):
-        for span in (1, 3):
-            own = b.OwnCohort("x", {"2026-01": 100.0, b.month_label(
-                b.month_index("2026-01") + span): 90.0}, {})
-            own = own._replace(ahead={p: 1000.0 for p in own.waiting})
-            self.assertEqual([n for n, _, _ in b.own_windows(own)], [span])
-
-    def test_window_with_a_missing_start_month_is_skipped(self):
-        waiting = {p: 100.0 for p in PERIODS if p != "2026-07"}
-        own = b.OwnCohort("x", waiting, dict(waiting))
-        self.assertEqual([n for n, _, _ in b.own_windows(own)], [6, 9])
-
-    def test_too_little_data_has_no_windows(self):
-        self.assertEqual(b.own_windows(b.OwnCohort("x", {}, {})), [])
-        self.assertEqual(b.own_windows(b.OwnCohort("x", {"2026-01": 5.0},
-                                                   {"2026-01": 9.0})), [])
 
     def test_rate_cell(self):
         self.assertEqual(b.rate_cell(None), ("n/a", ()))
         self.assertEqual(b.rate_cell(-0.2), ("grew", ("yellow",)))
         self.assertEqual(b.rate_cell(0.0141), ("1.4%", ()))
 
-    def test_report_section(self):
-        out = run_analyze(JULY_ENTERED, own=JULY_OWN)
-        self.assertIn("Your own cohort (2025-07)", out)
-        self.assertIn("2,500 in 2026-01 -> 2,200 in 2026-10", out)
-        row = [ln.split() for ln in out.splitlines() if "last 9 months" in ln]
-        self.assertEqual(row, [["last", "9", "months", "1.4%", "5.7%"]])
-        # It sits between the look-back summary and the look-ahead.
-        self.assertLess(out.index("Across the 9 months"), out.index("Your own"))
-        self.assertLess(out.index("Your own"), out.index("Looking ahead"))
-
-    def test_absent_without_a_cohort(self):
-        self.assertNotIn("Your own cohort", run_analyze(JULY_ENTERED))
-
-    def test_fallback_note_without_the_next_cohort(self):
-        own = b.own_cohort({"2025-07": JULY_COHORTS["2025-07"]}, "2025-07")
-        out = run_analyze(JULY_ENTERED, own=own)
-        self.assertIn("No 2025-08 figures for the same months", out)
-        self.assertNotIn("Still waiting", out)
-
-    def test_fits_and_strips_cleanly_at_every_width(self):
-        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
-            with self.subTest(width=width):
-                out = run_analyze(JULY_ENTERED, width, JULY_OWN)
-                self.assertLessEqual(max(map(len, out.splitlines())), width)
-                with unittest.mock.patch.object(b, "COLOR", True):
-                    colored = run_analyze(JULY_ENTERED, width, JULY_OWN)
-                self.assertEqual(ANSI.sub("", colored), out)
-                rates = ("0.0%", "3.0%", "0.7%", "3.8%", "1.4%", "5.7%")
-                section = out[out.index("Your own"):out.index("Looking ahead")]
-                for rate in rates:
-                    self.assertIn(rate, section)
 
     # The tests below pin the block's exact text; they were added to kill the
     # mutants (text, alignment, padding) the looser assertions above let by.
@@ -639,170 +223,16 @@ class OwnCohortRates(unittest.TestCase):
             20000.0, 19000, 18000, 17000, 16000, 15000, 14000, 13000, 12000, 11000,
             10000, 9500, 9000])))
 
-    def own_block(self, own: "b.OwnCohort", width: int) -> str:
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            b.print_own_cohort(own, width)
-        return buf.getvalue()
-
-    def test_block_text_wide(self):
-        self.assertEqual(self.own_block(self.OWN13, WIDE), """\
-  Your own cohort (2025-07)
-    Everyone from 2025-07 still waiting is 2025-08's people ahead minus yours.
-    If files within a month are pulled in random order, the share of them
-    cleared each month is your chance, however much older files are put first.
-    Still waiting:  2,600 in 2025-10 -> 2,300 in 2026-10
-    per month       your cohort  people ahead
-    last 3 months          grew          6.5%
-    last 6 months          0.7%          7.1%
-    last 12 months         1.0%          6.4%
-    IRCC rounds these counts to the nearest 100, so a single month of one
-    cohort is mostly noise; the longer windows are steadier.
-""")
-
-    def test_block_text_narrow(self):
-        self.assertEqual(self.own_block(self.OWN13, STACKED), """\
-  Your own cohort (2025-07)
-    Everyone from 2025-07 still waiting
-    is 2025-08's people ahead minus
-    yours. If files within a month are
-    pulled in random order, the share of
-    them cleared each month is your
-    chance, however much older files are
-    put first.
-    Still waiting: 2,600 in 2025-10 ->
-      2,300 in 2026-10
-    /mo    cohort   ahead
-    3 mo     grew    6.5%
-    6 mo     0.7%    7.1%
-    12 mo    1.0%    6.4%
-    IRCC rounds these counts to the
-    nearest 100, so a single month of
-    one cohort is mostly noise; the
-    longer windows are steadier.
-""")
-
-    def test_fallback_note_text(self):
-        self.assertEqual(self.own_block(b.OwnCohort("2025-07", {}, {}), WIDE), """\
-  Your own cohort (2025-07)
-    No 2025-08 figures for the same months, so there's no own-cohort rate; the
-    chances above count everyone ahead of you.
-""")
-
-    def test_spelled_out_headings_exactly_when_they_fit(self):
-        # "    last 12 months  your cohort  people ahead" is 45 wide.
-        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
-            with self.subTest(width=width):
-                out = self.own_block(self.OWN13, width)
-                self.assertEqual("your cohort" in out, width >= 45)
-
-    def test_two_month_window_is_plural(self):
-        own = b.OwnCohort("2025-12", {"2026-01": 100.0, "2026-03": 90.0},
-                          {"2026-01": 1000.0, "2026-03": 900.0})
-        self.assertIn("    last 2 months  ", self.own_block(own, WIDE))
-
 
 SAMPLE = ("2026-07,2025-07,10500\n2026-08,2025-07,10200\n2026-09,2025-07,9700\n"
           "2026-09,2025-08,11900\n2026-08,2025-08,12500\n"
           "2026-09,2025-09,14400\n")
 
 
-class MainWithHistory(unittest.TestCase):
-    def _run(self, typed: str, body: str = SAMPLE) -> str:
-        with tempfile.TemporaryDirectory() as d:
-            return run_main(typed, write_history(d, body))
-
-    def test_menu_lists_cohorts_with_months_of_data(self):
-        out = self._run("")
-        self.assertIn("1) 2025-07  3 months of data (2026-07 to 2026-09)", out)
-        self.assertIn("2) 2025-08  2 months of data (2026-08 to 2026-09)", out)
-        self.assertIn("1 more with only one month", out)
-        self.assertNotIn("1) 2025-09", out)
-
-    def test_empty_line_uses_the_default_cohort(self):
-        out = self._run("")
-        self.assertIn("Using cohort 2025-07", out)
-        self.assertNotIn("Using the default", out)
-        self.assertIn("10,500 -> 10,200 -> 9,700", out)
-
-    def test_pick_by_number(self):
-        out = self._run("2")
-        self.assertIn("Using cohort 2025-08", out)
-        self.assertIn("12,500 -> 11,900", out)
-
-    def test_pasted_numbers_still_work(self):
-        out = self._run("500, 900, 1400")
-        self.assertNotIn("Using cohort", out)
-        self.assertIn("1,400 -> 900 -> 500", out)
-        self.assertNotIn("Your own cohort", out)
-
-    def test_cohort_pick_adds_its_own_rates(self):
-        out = self._run("2025-07")
-        # 2025-08 has 2026-08 and 2026-09: 2,300 -> 2,200 of 2025-07 waiting.
-        self.assertIn("2,300 in 2026-08 -> 2,200 in 2026-09", out)
-        row = [ln.split() for ln in out.splitlines()
-               if ln.strip().startswith("last month")]
-        self.assertEqual(row, [["last", "month", "4.3%", "4.9%"]])
-
-    def test_cohort_without_a_later_one_falls_back(self):
-        out = self._run("2")   # 2025-08; 2025-09 has a single month
-        self.assertIn("No 2025-09 figures for the same months", out)
-
-    def test_gap_is_flagged(self):
-        out = self._run("2025-07", "2026-09,2025-07,9700\n2026-07,2025-07,10500\n")
-        self.assertIn("No data for 2026-08", out)
-
-    def test_default_cohort_absent_falls_back_to_default_input(self):
-        out = self._run("", "2026-09,2025-08,11900\n2026-08,2025-08,12500\n")
-        self.assertIn("Using the default", out)
-
-    def test_rejected_rows_are_flagged(self):
-        out = self._run("", SAMPLE + "Sept,2025-07,9000\n2026-06,2025-07,nan\n")
-        self.assertIn("Skipped unreadable rows in flpt_history.csv (lines 8, 9)", out)
-        self.assertIn("Using cohort 2025-07", out)
-        self.assertNotIn("Skipped", self._run(""))
-        self.assertIn("(line 8).", self._run("", SAMPLE + "Sept,2025-07,9000\n"))
-
-    def test_paired_looking_cohort_drops_its_own_rates(self):
-        # Newest first that's 10, 5000, 20, 6000: a two-column paste to
-        # extract_backlog, so what's analyzed is no longer the cohort's series.
-        body = "".join(f"{p},{c},{n}\n" for c, counts in
-                       (("2025-07", (6000, 20, 5000, 10)),
-                        ("2025-08", (9000, 8000, 7000, 6000)))
-                       for p, n in zip(("2026-06", "2026-07", "2026-08", "2026-09"),
-                                       counts))
-        out = self._run("2025-07", body)
-        self.assertIn("Input mode: two-column", out)
-        self.assertNotIn("Your own cohort", out)
-
-    def test_rejected_rows_warning_wraps_and_is_yellow(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            b.warn_rejected([3, 14, 15, 92, 65, 358, 979], STACKED)
-        self.assertEqual(buf.getvalue(), "⚠  Skipped unreadable rows in\n"
-                                         "    flpt_history.csv (lines 3, 14, 15,\n"
-                                         "    92, 65, 358, 979).\n")
-        with unittest.mock.patch.object(b, "COLOR", True), \
-                contextlib.redirect_stdout(io.StringIO()) as buf:
-            b.warn_rejected([3], WIDE)
-        self.assertTrue(buf.getvalue().startswith("\033[33m⚠  Skipped"))
-
-    def test_no_analyzable_cohort_keeps_the_plain_prompt(self):
-        out = self._run("", "2026-09,2025-08,11900\n")
-        self.assertNotIn("Cohorts tracked", out)
-        self.assertIn("Using the default", out)
-
-
 ANSI = re.compile(r"\033\[[0-9;]*m")
 
 
 class Cells(unittest.TestCase):
-    def test_time_to_clear(self):
-        self.assertEqual(b.time_to_clear(9300, 722, 0.5), 9300 * 0.5 / 722)
-        # Any positive pace clears eventually, however slow; none never does.
-        self.assertEqual(b.time_to_clear(10, 0.1), 100)
-        for rate in (0, -5):
-            self.assertEqual(b.time_to_clear(10, rate), float("inf"))
 
     def test_cells_stay_inside_their_column(self):
         for value in (0, 7, 9999999, 10000000, -9999999, 1e300, -1e300, 0.4):
@@ -839,40 +269,6 @@ class Cells(unittest.TestCase):
             self.assertEqual(b.fmt_when(inf), "never")
             self.assertEqual(b.fmt_when(96000.0), "8,000y")   # past year 9999
             self.assertEqual(b.fmt_when(1e300), "8e+298y")
-
-
-class MainSummarize(unittest.TestCase):
-    def test_summarizes_without_prompting(self):
-        with tempfile.TemporaryDirectory() as d, \
-                unittest.mock.patch("builtins.input") as typed:
-            body = "".join(f"{p},{c},{n:.0f}\n"
-                           for c, series in FIFO_COHORTS.items() for p, n in series)
-            out = run_main("", write_history(d, body + "Sept,2025-07,1\n"),
-                           ("--summarize",))
-        self.assertIn("WHEN EACH COHORT IS PROCESSED", out)
-        self.assertIn("  2025-07 ", out)
-        self.assertIn("Skipped unreadable rows", out)
-        self.assertNotIn("BURN-DOWN ANALYSIS", out)
-        self.assertNotIn("PROCESSING ORDER", out)
-        typed.assert_not_called()
-
-    def test_help_describes_the_flag(self):
-        with contextlib.redirect_stdout(io.StringIO()) as buf, \
-                self.assertRaises(SystemExit):
-            b.parse_args(["--help"])
-        text = " ".join(buf.getvalue().split())
-        self.assertRegex(text, r"(^| )When each cohort in the processing-times "
-                               r"history is likely to be processed\.( |$)")
-        self.assertIn("--interactive instead of the report, prompt for a cohort "
-                      "or pasted counts and estimate them as a random-order queue",
-                      text)
-        self.assertNotIn("--summarize", text)   # merged into the default report
-
-    def test_unknown_flag_is_rejected(self):
-        with tempfile.TemporaryDirectory() as d, \
-                contextlib.redirect_stderr(io.StringIO()), \
-                self.assertRaises(SystemExit):
-            run_main("", Path(d) / "none.csv", ("--sumarize",))
 
 
 def run_fifo(cohorts: dict, width: int = WIDE, target: str = b.DEFAULT_COHORT) -> str:
@@ -1890,36 +1286,45 @@ class Widget(unittest.TestCase):
                 self.assertFalse(b.write_widget(Path(d) / "h.csv", cohort=target))
 
 
-class MainFifo(unittest.TestCase):
-    def history(self, d: str) -> Path:
+class MainReport(unittest.TestCase):
+    def history(self, d: str, extra: str = "") -> Path:
         return write_history(d, "".join(f"{p},{c},{n:.0f}\n"
                                         for c, series in FIFO_COHORTS.items()
-                                        for p, n in series))
+                                        for p, n in series) + extra)
 
-    def test_reports_without_prompting(self):
+    def test_reports_the_default_or_named_cohort(self):
         with tempfile.TemporaryDirectory() as d:
-            out = run_main("", self.history(d), ("--fifo",))
-            other = run_main("", self.history(d), ("--fifo", "2025/6"))
+            out = run_main(self.history(d))
+            other = run_main(self.history(d), ("2025/6",))
+        self.assertIn("WHEN EACH COHORT IS PROCESSED", out)
         self.assertIn("When will 2025-07 be processed?", out)
-        self.assertNotIn("Pick a cohort", out)
         self.assertIn("When will 2025-06 be processed?", other)
-        with tempfile.TemporaryDirectory() as d, \
-                unittest.mock.patch("builtins.input") as typed:
-            bare = run_main("", self.history(d), ())
-            positional = run_main("", self.history(d), ("2025/6",))
-        typed.assert_not_called()
-        self.assertEqual(bare, out)
-        self.assertEqual(positional, other)
 
-    def test_with_summarize_reports_every_cohort(self):
+    def test_short_is_only_the_estimates_table(self):
         with tempfile.TemporaryDirectory() as d:
-            for args in (("--summarize", "--fifo"), ("--fifo", "--summarize"),
-                         ("--summarize", "--fifo", "2025-06")):
-                out = run_main("", self.history(d), args)
-                self.assertIn("WHEN EACH COHORT IS PROCESSED", out, args)
-                self.assertNotIn("COHORT SUMMARY", out, args)
-                self.assertNotIn("PROCESSING ORDER", out, args)
-                self.assertNotIn("Pick a cohort", out, args)
+            short = run_main(self.history(d), ("--short",))
+            full = run_main(self.history(d))
+        self.assertEqual(short, """\
+  cohort        arrives    sweep ends  leftovers half
+  2025-05           now  2029-05  54%    2031-02  77%
+  2025-06  2029-01  22%  2031-08  70%    2033-05  85%
+  2025-07  2031-04  38%  2034-04  77%    2035-12  89%
+""")
+        self.assertIn("Estimates:\n" + short, full)
+
+    def test_short_without_figures_says_so(self):
+        self.assertIn("No cohort from 2025-01 on", run_short({}))
+        short = {**FIFO_COHORTS, "2025-06": FIFO_COHORTS["2025-06"][1:],
+                 "2025-07": FIFO_COHORTS["2025-07"][1:]}
+        self.assertEqual(run_short(short),
+                         "No settled cohort has figures for 2026-10.\n")
+
+    def test_short_bolds_the_cohort(self):
+        with unittest.mock.patch.object(b, "COLOR", True):
+            out = run_short(FIFO_COHORTS, "2025-06")
+        bold = [ln for ln in out.splitlines() if "\033[1m" in ln]
+        self.assertEqual(len(bold), 1)
+        self.assertIn("2025-06", bold[0])
 
     def test_dates_by_default_durations_on_request(self):
         def durations(text):
@@ -1927,52 +1332,78 @@ class MainFifo(unittest.TestCase):
             return [12 * int(y or 0) + int(m or n or 0) for y, m, n in re.findall(
                 r"(?<![\w-])(?:(\d+)y(?: (\d+)m)?|(\d+)m)\b", text)]
         with tempfile.TemporaryDirectory() as d:
-            for flag, table in (("--fifo", "pace/mo"), ("--summarize", "Estimates:")):
-                dates = run_main("", self.history(d), (flag,))
-                spans = run_main("", self.history(d), (flag, "--durations"))
-                self.assertIn("as the month (YYYY-MM) they come to, counted "
-                              "from 2026-10", " ".join(dates.split()), flag)
-                self.assertIn("All times are how long from 2026-10, in years and "
-                              "months", " ".join(spans.split()), flag)
+            for flags, table in (((), "pace/mo"), (("--short",), "leftovers half")):
+                dates = run_main(self.history(d), flags)
+                spans = run_main(self.history(d), flags + ("--durations",))
                 # Every duration cell is that many months after 2026-10.
                 months = durations(spans.split(table)[-1])
-                self.assertTrue(months, flag)
-                self.assertFalse(durations(dates.split(table)[-1]), flag)
+                self.assertTrue(months, flags)
+                self.assertFalse(durations(dates.split(table)[-1]), flags)
                 for n in months:
                     self.assertIn(b.month_label(b.month_index("2026-10") + n),
-                                  dates, (flag, n))
-            self.assertIsNone(b.DATES_FROM)     # reset once the report is out
+                                  dates, (flags, n))
+            full = " ".join(run_main(self.history(d)).split())
+            self.assertIn("as the month (YYYY-MM) they come to, counted from "
+                          "2026-10", full)
+            self.assertIn("All times are how long from 2026-10, in years and "
+                          "months", " ".join(run_main(self.history(d),
+                                                       ("--durations",)).split()))
+        self.assertIsNone(b.DATES_FROM)     # reset once the report is out
 
-    def test_durations_needs_a_report(self):
-        with tempfile.TemporaryDirectory() as d, \
-                contextlib.redirect_stderr(io.StringIO()) as err, \
-                self.assertRaises(SystemExit):
-            run_main("", Path(d) / "none.csv", ("--interactive", "--durations"))
-        self.assertIn("--durations doesn't apply to --interactive", err.getvalue())
+    def test_rejected_rows_are_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            clean = run_main(self.history(d))
+            body = self.history(d, "Sept,2025-07,9000\n2026-06,2025-07,nan\n")
+            lines = len(body.read_text().splitlines())
+            out = run_main(body)
+        self.assertNotIn("Skipped", clean)
+        self.assertIn(f"Skipped unreadable rows in flpt_history.csv (lines "
+                      f"{lines - 1}, {lines})", out)
+        self.assertIn("WHEN EACH COHORT IS PROCESSED", out)
 
-    def test_bad_cohort_is_rejected(self):
-        with tempfile.TemporaryDirectory() as d, \
-                contextlib.redirect_stderr(io.StringIO()) as err, \
-                self.assertRaises(SystemExit):
-            run_main("", Path(d) / "none.csv", ("--fifo", "July"))
-        self.assertIn("argument --fifo: not a YYYY-MM month: 'July'", err.getvalue())
+    def test_rejected_rows_warning_wraps_and_is_yellow(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            b.warn_rejected([3, 14, 15, 92, 65, 358, 979], STACKED)
+        self.assertEqual(buf.getvalue(), "⚠  Skipped unreadable rows in\n"
+                                         "    flpt_history.csv (lines 3, 14, 15,\n"
+                                         "    92, 65, 358, 979).\n")
+        with unittest.mock.patch.object(b, "COLOR", True), \
+                contextlib.redirect_stdout(io.StringIO()) as buf:
+            b.warn_rejected([3], WIDE)
+        self.assertTrue(buf.getvalue().startswith("\033[33m⚠  Skipped"))
 
-    def test_help_describes_the_flag(self):
+    def test_bad_arguments_are_rejected(self):
+        for argv, message in ((("July",), "argument cohort: not a YYYY-MM month: 'July'"),
+                              (("--fifo",), "unrecognized arguments: --fifo"),
+                              (("--summarize",), "unrecognized arguments: --summarize"),
+                              (("--interactive",), "unrecognized arguments: --interactive")):
+            with tempfile.TemporaryDirectory() as d, \
+                    contextlib.redirect_stderr(io.StringIO()) as err, \
+                    self.assertRaises(SystemExit):
+                run_main(Path(d) / "none.csv", argv)
+            self.assertIn(message, err.getvalue(), argv)
+
+    def test_help_describes_the_flags(self):
         with contextlib.redirect_stdout(io.StringIO()) as buf, \
                 self.assertRaises(SystemExit):
             b.parse_args(["--help"])
-        self.assertIn("cohort the cohort to show in detail (default 2025-07)",
-                      " ".join(buf.getvalue().split()))
+        text = " ".join(buf.getvalue().split())
+        self.assertRegex(text, r"(^| )When each cohort in the processing-times "
+                               r"history is likely to be processed\.( |$)")
+        self.assertIn("cohort the cohort to show in detail (default 2025-07)", text)
+        self.assertIn("--short only the estimates table", text)
 
 
-def run_analyze_colored(entered: list[float], width: int = WIDE) -> str:
-    with unittest.mock.patch.object(b, "COLOR", True):
-        return run_analyze(entered, width)
+def run_short(cohorts: dict, target: str = b.DEFAULT_COHORT) -> str:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        b.print_short(cohorts, WIDE, target)
+    return buf.getvalue()
+
 
 
 class Color(unittest.TestCase):
-    DATA = Widths.DATA
-
     def test_enabled_on_a_tty(self):
         tty, pipe = unittest.mock.Mock(), io.StringIO()
         tty.isatty.return_value = True
@@ -2021,43 +1452,27 @@ class Color(unittest.TestCase):
             tight = b.stat_line("Label", "  value", len("Label: value"))
             self.assertEqual(tight, "Label: \033[1mvalue\033[0m")
 
-    def test_styling_never_changes_the_text(self):
-        # Colour is painted over a finished layout, so stripping it has to give
-        # back exactly the plain report — at every width, in every layout.
-        for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
-            with self.subTest(width=width):
-                colored = run_analyze_colored(self.DATA, width)
-                self.assertIn("\033[", colored)
-                self.assertEqual(ANSI.sub("", colored),
-                                 run_analyze(self.DATA, width))
-
-    def test_no_style_bleeds_past_its_line(self):
-        for width in (WIDE, COMPACT, STACKED):
-            for line in run_analyze_colored(self.DATA, width).splitlines():
-                codes = ANSI.findall(line)
-                if codes:
-                    self.assertEqual(codes[-1], "\033[0m", repr(line))
 
     def test_main_honours_force_and_no_color(self):
         with tempfile.TemporaryDirectory() as d:
             missing = Path(d) / "none.csv"
-            plain = run_main("", missing)
-            forced = run_main("", missing, FORCE_COLOR="1")
+            plain = run_main(missing)
+            forced = run_main(missing, FORCE_COLOR="1")
             self.assertNotIn("\033[", plain)
             self.assertIn("\033[", forced)
             self.assertEqual(ANSI.sub("", forced), plain)
-            self.assertNotIn("\033[", run_main("", missing, FORCE_COLOR="1",
+            self.assertNotIn("\033[", run_main(missing, FORCE_COLOR="1",
                                                NO_COLOR="1"))
         self.assertFalse(b.COLOR)
 
 
 class FuzzPipeline(unittest.TestCase):
     """
-    Random inputs through the whole pipeline.
+    Random histories through the report.
 
-    These counts come from a public feed and get pasted by hand, so the
+    These counts come from a public feed and hand-edited history, so the
     interesting failures are shapes nobody wrote a case for: queues that grow,
-    stall, clear entirely, or arrive as a mangled two-column paste.
+    stall or clear entirely.
     """
 
     CASES = int(os.environ.get("BURNDOWN_FUZZ_CASES", "300"))
@@ -2079,53 +1494,9 @@ class FuzzPipeline(unittest.TestCase):
             else:
                 value += rng.randint(-3000, 3000)
             chrono.append(float(value))
-        chrono.reverse()  # analyze() wants newest first
+        chrono.reverse()  # newest first, as load_cohorts() gives a series
         return chrono
 
-    def test_analyze_never_raises(self):
-        rng = random.Random(20260829)
-        for i in range(self.CASES):
-            entered = self._random_backlog(rng)
-            width = rng.randint(b.MIN_WIDTH, b.MAX_WIDTH)
-            with self.subTest(case=i, entered=entered, width=width):
-                out = run_analyze(entered, width)
-                self.assertTrue(out.strip())
-                # A NaN or an unformatted inf leaking into the report means the
-                # arithmetic went somewhere the formatters don't handle.
-                self.assertNotIn("nan", out.lower())
-                self.assertNotIn("inf", out.lower())
-                # Whatever the numbers, the report has to stay inside the
-                # terminal — that's what the narrow layouts are for.
-                longest = max(len(line) for line in out.splitlines())
-                self.assertLessEqual(longest, width)
-                # And colour is only ever paint on that same text.
-                colored = run_analyze_colored(entered, width)
-                self.assertEqual(ANSI.sub("", colored), out)
-
-    def test_own_cohort_never_breaks_the_report(self):
-        # Own-cohort counts are differences of two rounded public figures, so
-        # they can be zero, flat, growing or even negative; none of that may
-        # crash, overflow or leak a NaN.
-        rng = random.Random(20261015)
-        for i in range(self.CASES):
-            entered = self._random_backlog(rng)
-            start = rng.randint(2020 * 12, 2027 * 12)
-            periods = [b.month_label(start + k) for k in range(len(entered))]
-            periods = [p for p in periods if rng.random() < 0.85] or periods[:1]
-            waiting = {p: float(rng.randint(-200, 5000)) for p in periods}
-            ahead = {p: float(rng.randint(0, 60000)) for p in periods}
-            own = b.OwnCohort(b.month_label(start - 12), waiting, ahead)
-            width = rng.randint(b.MIN_WIDTH, b.MAX_WIDTH)
-            with self.subTest(case=i, own=own, width=width):
-                out = run_analyze(entered, width, own)
-                self.assertIn("Your own cohort", out)
-                self.assertNotIn("nan", out.lower())
-                self.assertNotIn("inf", out.lower())
-                self.assertLessEqual(max(map(len, out.splitlines())), width)
-                for n, mine, theirs in b.own_windows(own):
-                    self.assertGreaterEqual(n, 1)
-                    for rate in (mine, theirs):
-                        self.assertTrue(rate is None or rate <= 1.0)
 
     def test_summary_never_breaks(self):
         # Every settled cohort with a latest figure, however odd its counts,
@@ -2163,39 +1534,6 @@ class FuzzPipeline(unittest.TestCase):
                 self.assertEqual(rate > 0, end < start)
                 self.assertAlmostEqual(start * (1 - rate) ** months, end,
                                        delta=1e-6 * max(start, end, 1))
-
-    def test_odds_invariants(self):
-        rng = random.Random(20260830)
-        for i in range(self.CASES):
-            entered = self._random_backlog(rng)
-            chrono = list(reversed(entered))
-            processed = chrono_to_processed(chrono)
-            with self.subTest(case=i, chrono=chrono):
-                odds = b.monthly_odds(chrono, processed)
-                self.assertEqual(len(odds), len(processed))
-                for chance in odds:
-                    if chance is not None:
-                        self.assertGreater(chance, 0.0)
-                        self.assertLessEqual(chance, 1.0)
-
-    def test_done_by_is_monotonic_and_bounded(self):
-        rng = random.Random(20260831)
-        for i in range(self.CASES):
-            current = float(rng.randint(0, 60000))
-            rate = float(rng.randint(-2000, 5000))
-            with self.subTest(case=i, current=current, rate=rate):
-                previous = 0.0
-                for months in range(0, 60):
-                    p = b.done_by(current, rate, months)
-                    if p is None:
-                        self.assertTrue(rate <= 0 or current <= 0)
-                        continue
-                    self.assertGreaterEqual(p, previous)
-                    self.assertGreaterEqual(p, 0.0)
-                    self.assertLessEqual(p, 1.0)
-                    previous = p
-                    if rate * months >= current:
-                        self.assertEqual(p, 1.0)
 
     def test_load_cohorts_against_hand_edited_history(self):
         """
@@ -2251,16 +1589,6 @@ class FuzzPipeline(unittest.TestCase):
                 self.assertEqual(
                     got, {c: sorted(p.items(), reverse=True)
                           for c, p in sorted(expected.items())})
-                for series in got.values():
-                    b.missing_months([p for p, _ in series])
-
-    def test_parse_round_trips_what_it_formats(self):
-        rng = random.Random(20260901)
-        for i in range(self.CASES):
-            values = [float(rng.randint(0, 60000)) for _ in range(rng.randint(1, 12))]
-            raw = ", ".join(str(v) for v in values)
-            with self.subTest(case=i, raw=raw):
-                self.assertEqual(b.parse_numbers(raw), values)
 
 
 class FuzzFifo(unittest.TestCase):

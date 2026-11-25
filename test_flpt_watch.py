@@ -212,7 +212,8 @@ class RecordHistory(unittest.TestCase):
         series = burndown.load_cohorts(self.path)["2025-07"]
         self.assertEqual([c for _, c in series],
                          [9700, 10100, 10200, 10500, 11300, 11700, 13000, 14500, 15800])
-        self.assertEqual(burndown.missing_months([p for p, _ in series]), [])
+        months = [burndown.month_index(p) for p, _ in series]
+        self.assertEqual(months, list(range(months[0], months[0] - len(months), -1)))
 
 
 def setUpModule():
@@ -478,7 +479,6 @@ class FuzzSnapshots(unittest.TestCase):
                 for series in loaded.values():
                     periods = [p for p, _ in series]
                     self.assertEqual(periods, sorted(set(periods), reverse=True))
-                    burndown.missing_months(periods)
 
     def test_check_once_survives_any_snapshot(self):
         rng = random.Random(4321)

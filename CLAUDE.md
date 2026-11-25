@@ -7,12 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Two independent, stdlib-only Python scripts for tracking Canadian citizenship
 proof-of-citizenship processing times:
 
-- [burndown.py](burndown.py) — by default, a report of when each tracked
-  cohort is likely to be processed under an oldest-first sweep model, with
-  one cohort in detail (described under Running). `--interactive` is the
-  older CLI: the user pastes a comma-separated list of monthly backlog counts
-  (newest first, oldest last), or picks a cohort, and it infers the monthly
-  processing rate and prints low/likely/high time-remaining estimates.
+- [burndown.py](burndown.py) — a report of when each tracked cohort is
+  likely to be processed under an oldest-first sweep model, with one cohort
+  in detail (described under Running).
 - [flpt_watch.py](flpt_watch.py) — polls IRCC's published processing-times
   feed hourly, tracks the `citizen-proofs-2025/07` people-ahead figure and
   wait-time estimate, and beeps and posts a macOS notification when
@@ -31,30 +28,21 @@ a gitignored `.venv` from [requirements-dev.txt](requirements-dev.txt)
 ## Running
 
 ```bash
-python3 burndown.py [COHORT]        # the report (default DEFAULT_COHORT)
-python3 burndown.py --interactive   # the older random-order prompt
+python3 burndown.py [COHORT]           # the report (default DEFAULT_COHORT)
+python3 burndown.py --short [COHORT]   # only its estimates table
 ```
 
-With no flags, `burndown.py` prints the report (`print_fifo`, described
-below). It was two reports, `--summarize` and `--fifo [COHORT]`, until
-2026-11-25; both flags still work as hidden aliases (`--fifo COHORT` picks
-the cohort, `--summarize` changes nothing).
-
-`burndown.py --interactive` prompts for one line of input via `input("> ")`,
-then prints the analysis to stdout. When `flpt_history.csv` exists it first
-lists every cohort with two or more months of data; the prompt accepts a menu
-number, a cohort (`2025-07` or `2025/07`), or pasted counts. Pressing return
-uses `DEFAULT_COHORT` from the history, or `DEFAULT_INPUT` when there's no
-history (or that cohort has under two months).
+`burndown.py` prints the report (`print_fifo`, described below); `--short`
+prints only its estimates table (`print_short`: `print_split`, COHORT's row
+bold, with no banner or notes). Until 2026-11-25 it was two reports,
+`--summarize` and `--fifo [COHORT]`, and with no flags an interactive
+random-order analyzer (paste monthly people-ahead counts, or pick a cohort,
+for low/likely/high times to clear); all three were removed then.
 
 The report sizes itself to the terminal (`output_width()`, overridable with
-`BURNDOWN_WIDTH`). `layout_for()` picks one of three shapes for the quantile
-tables: `wide` (>= `WIDE_TABLE`, 117 cols) is the full side-by-side grid,
-`compact` (>= `COMPACT_TABLE`, 80 cols) abbreviates each cell to
-`fmt_months_compact` and shortens the row labels, and `stacked` (anything
-narrower, floored at `MIN_WIDTH` = 40) gives each scenario its own block with
-one line per quantile. No figure is dropped at any width — only its shape
-changes. Prose wraps at `PROSE_WIDTH` (78) even on wider terminals.
+`BURNDOWN_WIDTH`, clamped to `MIN_WIDTH` 40 to `MAX_WIDTH` 117). Its tables
+fall back to a narrower shape (`print_columns` returning False) rather than
+drop a figure, and prose wraps at `PROSE_WIDTH` (78) even on wider terminals.
 
 ```bash
 BURNDOWN_WIDTH=50 python3 burndown.py   # check the narrow layouts
@@ -214,9 +202,8 @@ still hold the fast early-2026 months) over-predicted clearance badly.
 Times show as the
 month they come to by default (`fmt_when`: the latest period plus the
 rounded months, `2028-04` for 17m from 2026-11; `never` stays, and past year
-9999 it falls back to a duration). `--durations` (an error with
-`--interactive`) shows how long instead, as `fmt_duration` years and
-months (`1y 5m`, `11m`, `2y`; past `99y 11m` just the years). `print_report`
+9999 it falls back to a duration). `--durations` shows how long instead, as `fmt_duration` years and
+months (`1y 5m`, `11m`, `2y`; past `99y 11m` just the years). `main()`
 sets the module-level `DATES_FROM` (through the `dates_from` context manager)
 only while the report prints, so code called directly gets durations; the
 widget feed asks for dates. Both tables go through
@@ -233,18 +220,12 @@ since `summary_items` explains the arrival. (The older random-order
 Output is coloured (headings, rules, fast/slow rows, trend, warnings) when
 stdout is a TTY and `TERM` isn't `dumb`; `NO_COLOR=1` turns it off and
 `FORCE_COLOR=1` forces it on through a pipe. `main()` sets the module-level
-`COLOR` from `color_enabled()`, so `analyze()` called directly (as the tests do)
+`COLOR` from `color_enabled()`, so a report called directly (as the tests do)
 stays plain unless `COLOR` is patched. `paint()` is only ever applied to text
 that's already been padded and wrapped — never put escapes inside a string
 before it's measured, or column widths and `textwrap` will miscount. A test
 pins this: stripping the escapes from coloured output must give back the plain
 report byte for byte.
-
-To exercise the `--interactive` analysis without typing at the prompt, pipe input in:
-
-```bash
-echo "10200, 10500, 11300, 11700, 13000, 14500, 15800" | python3 burndown.py --interactive
-```
 
 Run the tests with:
 
@@ -310,7 +291,7 @@ bytecode caching (`python3 -B`, `PYTHONDONTWRITEBYTECODE=1`) and clear
 size and mtime-second unchanged, so Python silently reuses the stale `.pyc` and
 every such mutant appears to survive.
 
-The own-cohort block and the report are pinned by
+The report and `--short` are pinned by
 exact-text tests (added to kill text, padding and alignment mutants), so a
 wording or layout change there means updating those expected strings too.
 
@@ -388,86 +369,23 @@ and retried on the next run on its own; letting it escape would skip
 
 ### burndown.py
 
-History and prompt handling, ahead of the analysis pipeline:
+History handling, ahead of the report:
 
 - `month_key` — normalises a hand-typed month to `YYYY-MM` (or `None`).
   Periods sort as strings, so an unpadded month would otherwise reverse a
   series silently.
 - `load_cohorts(path, rejected=None)` — each cohort's series, newest first,
   last row per period winning (`history_count` parses each count). Mangled
-  rows' line numbers go to `rejected`.
-- `missing_months`, `cohort_menu` (cohorts with two or more months),
-  `describe_cohort`, `pick_cohort` (menu number or `YYYY-MM` / `YYYY/MM`) and
-  `resolve_input`, which turns whatever was typed into a line of counts plus
-  the cohort it came from (`None` for pasted counts).
+  rows' line numbers go to `rejected`, which `main()` reports with
+  `warn_rejected`.
 - `own_cohort` → `OwnCohort` — a cohort's own still-waiting count per period:
   the next month's cohort's people-ahead minus this one's, for periods both
-  have. `main()` passes it to `analyze(..., own=)` only when a cohort was
-  picked (not for pasted counts).
-- `color_enabled` / `paint` — see the colour notes above.
+  have. Single months are never shown on their own: IRCC rounds to the
+  nearest 100, so one month of a ~2,000-person cohort is mostly rounding.
+- `color_enabled` / `paint` — see the colour notes above. `fmt_pct` renders a
+  0..1 rate; `wrap` and `stat_line` fit prose and label/value rows to the
+  terminal.
 - `main(argv=())` takes its arguments explicitly (`__main__` passes
   `sys.argv[1:]`) so the tests, which run under unittest's own argv, can call
-  it bare. `print_report` prints the report (`print_fifo`) unless
-  `--interactive`, when `main()` goes on to the prompt.
+  it bare.
 
-The analysis itself is a small pipeline of pure functions, which `main()`
-wires to stdin/stdout:
-
-1. `parse_numbers` — tokenizes the raw input line (commas/whitespace/pipes/tabs
-   as separators) into floats.
-2. `extract_backlog` — heuristically detects and strips an interleaved
-   counter/index column (e.g. pasted data shaped like `1 2600 1 2700 2 7800`)
-   using a ratio guard (`max(markers) * 5 <= min(values)`) so genuine
-   single-column data isn't mistaken for paired data.
-3. `analyze` — takes an optional `width` (defaults to `output_width()`; the
-   tests pass it explicitly so the layout doesn't depend on whoever's terminal
-   is running them). The core logic: reverses input to chronological order, computes
-   month-over-month processed counts, derives mean/median/stdev/recent-pace
-   rates, and prints fast/likely/median/recent/slow time-remaining scenarios
-   plus best/likely/worst absolute bounds. Both tables are broken out across
-   the `QUANTILES` columns (25/50/75/100% of the cohort ahead cleared) —
-   assuming roughly random processing order, those columns are the
-   corresponding percentiles of your own wait.
-4. `fmt_months` — human-readable month/year formatting for a rate result, and
-   `fmt_months_compact` the abbreviated form. Both are guaranteed not to exceed
-   their column (`CELL` / `CELL_COMPACT`), degrading the format rather than
-   breaking alignment when a degenerate input produces a negative or enormous
-   month count. `quantile_header` renders the matching column headings for
-   either cell width. `fmt_pct` renders a 0..1 probability. `wrap` and
-   `stat_line` fit prose and label/value rows to the terminal.
-5. `monthly_odds` — per-month probability you'd have been pulled, given the
-   backlog at the start of each month. Returns `None` for months where the
-   queue grew or stalled rather than a misleading zero.
-6. `done_by` — forward-looking probability of being done within N months at a
-   steady rate. Exact under random draws without replacement: once k of the
-   `current` people ahead have cleared, your chance of being among them is
-   k/current, so it grows linearly to 1.
-7. `random_order_odds` — prints the odds section (`HORIZONS` sets the
-   forward-looking rows). It's the inverse of the quantile tables: those map a
-   probability to a time, this maps a time to a probability. A test pins the
-   two together, so change them as a pair.
-8. `print_own_cohort` — when `analyze` got an `OwnCohort`, a block after the
-   look-back: `own_windows` gives the compounded monthly clearance
-   (`shrink_rate`) of your own cohort beside the people-ahead rate, over the
-   `OWN_WINDOWS` trailing windows plus the full span. Single months are
-   deliberately not shown: IRCC rounds to the nearest 100, so one month of a
-   ~2,000-person cohort is mostly rounding. With fewer than two shared months
-   (e.g. the newest cohort) it prints a note and the people-ahead odds stand
-   alone. The look-ahead still uses the people-ahead model.
-
-The key modelling assumption: the input counts are *people ahead of you*, and
-under uniform random processing every file in the queue has the same per-month
-draw probability. So the fraction of the ahead-of-you cohort that cleared in a
-month is also your own odds for that month — no need to know the size of the
-queue behind you. The history shows that assumption doesn't hold: older
-cohorts clear much faster than newer ones, which is why the own-cohort block
-exists — it only assumes random order *within* your application month.
-
-`print_scenarios`, `print_lookback` and `print_lookahead` own the layout.
-The last two size their columns from the data (and fall back to abbreviated
-headings when the spelled-out ones don't fit), so their widths vary with the
-input — a fuzz case asserts no rendered line ever exceeds the target width.
-
-When changing the parsing heuristics in `extract_backlog`, keep in mind it's a
-best-effort guess with no way to ask the user for confirmation — the ratio
-guard is intentionally conservative to avoid silently halving legitimate data.
