@@ -201,9 +201,9 @@ rounded months, `2028-04` for 17m from 2026-11; `never` stays, and past year
 9999 it falls back to a duration). `--durations` (with `--summarize` or
 `--fifo`, an error alone) shows how long instead, as `fmt_duration` years and
 months (`1y 5m`, `11m`, `2y`; past `99y 11m` just the years). `print_report`
-sets the module-level `DATES_FROM` only while the report prints, so code
-called directly (the tests, and the widget feed, which shares `split_cells`)
-gets durations. Both tables go through
+sets the module-level `DATES_FROM` (through the `dates_from` context manager)
+only while the report prints, so code called directly gets durations; the
+widget feed asks for both. Both tables go through
 `print_columns` (about 55 and 70 columns on today's data); narrower, the
 counts become a sentence per cohort (`summary_lead_text`) and the estimates
 a heading per cohort with a line per cell. In `--fifo`'s estimate rows, too
@@ -336,8 +336,11 @@ launchctl bootout gui/$(id -u)/com.jade.flpt-watch; ~/Developer/ops/install-all.
 `burndown.write_widget` writes `widget_feed(DEFAULT_COHORT)` to `WIDGET_PATH`, which is
 `citizenship.json` in Scriptable's iCloud folder, and skips the write when that folder doesn't exist.
 The feed holds the cohort's `--summarize` cells for `WIDGET_FIELDS` (arrives, sweep ends,
-done by then, if left half by), each a label and its value.
-[scriptable/citizenship.js](scriptable/citizenship.js) draws them. To install it, copy it to
+done by then, if left half by), each a label, its value as a date, and its detail
+as a duration (`""` when it would repeat the value, as for the done-by-then share).
+[scriptable/citizenship.js](scriptable/citizenship.js) draws them as columns of
+date, small duration and label, each line in a fixed-height stack so the three
+kinds of line line up across the columns. To install it, copy it to
 `~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/Documents/Citizenship.js`, then add
 a Scriptable widget on the iPhone and pick that script. The tests patch `burndown.WIDGET_PATH`,
 so they never write to iCloud. How to change and deploy the widget:

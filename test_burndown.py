@@ -1843,20 +1843,39 @@ class Widget(unittest.TestCase):
         names = b.settled_cohorts(FIFO_COHORTS)
         last = b.latest_period(FIFO_COHORTS)
         target = names[1]
-        row = next(r for r in b.fifo_summary_rows(
-            FIFO_COHORTS, names, last, b.model_rates(FIFO_COHORTS, names, last))
-            if r.cohort == target)
+        def cells(start):
+            with b.dates_from(start):
+                row = next(r for r in b.fifo_summary_rows(
+                    FIFO_COHORTS, names, last,
+                    b.model_rates(FIFO_COHORTS, names, last))
+                    if r.cohort == target)
+            return dict(zip(b.SPLIT_HEADS, row.split))
+        dates, lengths = cells(last), cells(None)
+        heads = ("arrives", "sweep ends", "done by then", "if left, half by")
         feed = b.widget_feed(FIFO_COHORTS, target)
         self.assertEqual(feed["title"], f"Citizenship {target}")
         self.assertEqual(feed["period"], last)
         self.assertEqual([r["label"] for r in feed["rows"]],
                          ["Sweep arrives", "Sweep done", "Done by then",
                           "If left, half by"])
-        cells = dict(zip(b.SPLIT_HEADS, row.split))
-        self.assertEqual([cells[h] for h in
-                          ("arrives", "sweep ends", "done by then", "if left, half by")],
-                         [r["value"] for r in feed["rows"]])
-        self.assertEqual(set(feed["rows"][0]), {"label", "value"})
+        self.assertEqual([dates[h] for h in heads], [r["value"] for r in feed["rows"]])
+        self.assertEqual([lengths[h] if lengths[h] != dates[h] else "" for h in heads],
+                         [r["detail"] for r in feed["rows"]])
+        self.assertEqual(feed["rows"][2]["detail"], "")   # a share has no length
+        self.assertRegex(feed["rows"][1]["value"], r"^\d{4}-\d{2}$")
+        self.assertRegex(feed["rows"][1]["detail"], r"^\d+[ym]")
+        self.assertEqual(set(feed["rows"][0]), {"label", "value", "detail"})
+        self.assertIsNone(b.DATES_FROM)
+
+    def test_dates_from_restores_the_previous_value(self):
+        with b.dates_from("2025-01"):
+            with b.dates_from(None):
+                self.assertIsNone(b.DATES_FROM)
+            self.assertEqual(b.DATES_FROM, "2025-01")
+            with self.assertRaises(ValueError), b.dates_from("2026-01"):
+                raise ValueError
+            self.assertEqual(b.DATES_FROM, "2025-01")
+        self.assertIsNone(b.DATES_FROM)
 
     def test_no_feed_for_an_unsettled_or_unlisted_cohort(self):
         self.assertIsNone(b.widget_feed(FIFO_COHORTS, "2019-01"))

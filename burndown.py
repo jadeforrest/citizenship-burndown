@@ -50,6 +50,7 @@ period; add --durations to either to show how long from it instead (1y 5m).
 """
 
 import argparse
+import contextlib
 import csv
 import json
 import math
@@ -887,6 +888,17 @@ def fmt_duration(months: float) -> str:
 # shows the month a time comes to; None (--durations, and the widget) shows
 # how long from now.
 DATES_FROM: str | None = None
+
+
+@contextlib.contextmanager
+def dates_from(period: str | None):
+    """Set DATES_FROM to `period` for the block, then put back what it was."""
+    global DATES_FROM
+    saved, DATES_FROM = DATES_FROM, period
+    try:
+        yield
+    finally:
+        DATES_FROM = saved
 
 
 def fmt_when(months: float) -> str:
@@ -1975,21 +1987,32 @@ def widget_feed(cohorts: dict[str, list[tuple[str, float]]],
                 cohort: str = DEFAULT_COHORT) -> dict | None:
     """
     `cohort`'s --summarize estimates as the widget's JSON: a title, the period
-    they're from, and one row per WIDGET_FIELDS. None if it isn't settled or
+    they're from, and one row per WIDGET_FIELDS: its month (value) and how
+    long from the period that is (detail, "" when it reads the same). None if it isn't settled or
     has no figure for the latest period.
     """
     names = settled_cohorts(cohorts)
     if cohort not in names:
         return None
     last = latest_period(cohorts)
-    rows = fifo_summary_rows(cohorts, names, last, model_rates(cohorts, names, last))
-    row = next((r for r in rows if r.cohort == cohort), None)
-    if row is None:
+    dates, lengths = (widget_cells(cohorts, names, last, cohort, start)
+                      for start in (last, None))
+    if dates is None:
         return None
-    cells = dict(zip(SPLIT_HEADS, row.split))
-    return {"version": 1, "title": f"Citizenship {cohort}", "period": last,
-            "rows": [{"label": label, "value": cells[head]}
+    return {"version": 2, "title": f"Citizenship {cohort}", "period": last,
+            "rows": [{"label": label, "value": dates[head],
+                      "detail": "" if lengths[head] == dates[head] else lengths[head]}
                      for head, label in WIDGET_FIELDS]}
+
+
+def widget_cells(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+                 last: str, cohort: str, start: str | None) -> dict | None:
+    """`cohort`'s summary row by SPLIT_HEADS, with dates_from(`start`); None if absent."""
+    with dates_from(start):
+        rows = fifo_summary_rows(cohorts, names, last,
+                                 model_rates(cohorts, names, last))
+    row = next((r for r in rows if r.cohort == cohort), None)
+    return None if row is None else dict(zip(SPLIT_HEADS, row.split))
 
 
 def write_widget(history: Path = HISTORY_PATH, path: Path | None = None,
@@ -2114,15 +2137,11 @@ def print_report(args: argparse.Namespace,
     The report --summarize and/or --fifo asked for; False if neither did.
     Unless --durations, DATES_FROM is the latest period while it prints.
     """
-    global DATES_FROM
-    DATES_FROM = None if args.durations or not cohorts else latest_period(cohorts)
-    try:
+    with dates_from(None if args.durations or not cohorts else latest_period(cohorts)):
         if args.summarize:
             print_fifo_summary(cohorts, width, args.fifo or DEFAULT_COHORT)
         elif args.fifo:
             print_fifo(cohorts, width, args.fifo)
-    finally:
-        DATES_FROM = None
     return bool(args.summarize or args.fifo)
 
 
