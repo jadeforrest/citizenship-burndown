@@ -7,12 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Two independent, stdlib-only Python scripts for tracking Canadian citizenship
 proof-of-citizenship processing times:
 
-- [burndown.py](burndown.py) — interactive CLI that estimates how long a
-  backlog will take to clear. The user pastes a comma-separated list of
-  monthly backlog counts (newest first, oldest last); the script infers the
-  monthly processing rate and prints low/likely/high time-remaining estimates.
-  `--summarize` and `--fifo` skip the prompt for per-cohort estimates and a
-  processing-order report (both described under Running).
+- [burndown.py](burndown.py) — by default, a report of when each tracked
+  cohort is likely to be processed under an oldest-first sweep model, with
+  one cohort in detail (described under Running). `--interactive` is the
+  older CLI: the user pastes a comma-separated list of monthly backlog counts
+  (newest first, oldest last), or picks a cohort, and it infers the monthly
+  processing rate and prints low/likely/high time-remaining estimates.
 - [flpt_watch.py](flpt_watch.py) — polls IRCC's published processing-times
   feed hourly, tracks the `citizen-proofs-2025/07` people-ahead figure and
   wait-time estimate, and beeps and posts a macOS notification when
@@ -31,10 +31,16 @@ a gitignored `.venv` from [requirements-dev.txt](requirements-dev.txt)
 ## Running
 
 ```bash
-python3 burndown.py
+python3 burndown.py [COHORT]        # the report (default DEFAULT_COHORT)
+python3 burndown.py --interactive   # the older random-order prompt
 ```
 
-`burndown.py` is interactive: prompts for one line of input via `input("> ")`,
+With no flags, `burndown.py` prints the report (`print_fifo`, described
+below). It was two reports, `--summarize` and `--fifo [COHORT]`, until
+2026-11-25; both flags still work as hidden aliases (`--fifo COHORT` picks
+the cohort, `--summarize` changes nothing).
+
+`burndown.py --interactive` prompts for one line of input via `input("> ")`,
 then prints the analysis to stdout. When `flpt_history.csv` exists it first
 lists every cohort with two or more months of data; the prompt accepts a menu
 number, a cohort (`2025-07` or `2025/07`), or pasted counts. Pressing return
@@ -54,8 +60,8 @@ changes. Prose wraps at `PROSE_WIDTH` (78) even on wider terminals.
 BURNDOWN_WIDTH=50 python3 burndown.py   # check the narrow layouts
 ```
 
-`python3 burndown.py --fifo [COHORT]` (default `DEFAULT_COHORT`; `2025/7`
-style is normalised by `cohort_arg`) skips the prompt and asks how close to
+The report's cohort (default `DEFAULT_COHORT`; `2025/7` style is normalised
+by `cohort_arg`) is shown in detail, and the report asks how close to
 oldest-first the processing is. Only *settled* cohorts are compared, because
 of what Jade calls **the bulge**: a new cohort's own count first shows about
 2,000, then swings up, sometimes 10-30x, and falls back during its first few
@@ -168,9 +174,15 @@ put 20-60% within about a point of each other once the pace had settled, with
 at. `sweep_left` and `position` take a `share` argument so the backtest can
 try others.
 
-`python3 burndown.py --summarize` skips the prompt and runs
-`print_fifo_summary`: the column notes (`summary_items`) and model notes
-(`sweep_items`) as bullet lists, then two tables, one row per settled cohort.
+The report (`print_fifo`) runs, in order: `print_every_cohort` (the column
+notes, `summary_items`, then two tables, one row per settled cohort, the
+report's cohort in bold), `print_target` (that cohort's 50/75/90% times with
+and without the sweep, `print_estimates`), `print_order_section` (each
+cohort's own clearance, `print_fifo_table`, the trickle and leftover rates,
+and the cohort's `print_order` score), and last the model notes once
+(`sweep_items`, `unsettled_note`, `BACKTEST_NOTE`). A cohort with no
+own-cohort figure for the latest period gets a note instead of
+`print_target` and the order score.
 
 - The counts (`print_counts`, `COUNT_FIELDS`): people ahead, "to sweep"
   (`Position.work`), its own still waiting, "leftover" (`leftover_percent`:
@@ -188,7 +200,7 @@ try others.
   word (`now`, `passed`, `-`, `never`) has no chance. The outcome has two
   humps, done by the sweep's end or a leftover with a long tail, so these
   replaced the 50%/90% columns on 2026-11-20 (a 50%-90% range hid that;
-  `--fifo` still shows 50/75/90%). Until 2026-11-25 there were four columns,
+  the cohort in detail still shows 50/75/90%). Until 2026-11-25 there were four columns,
   the chance only at the sweep's end ("done by then") and the leftovers'
   time headed "if left, half by".
 
@@ -199,23 +211,22 @@ a bracketed low-high range over the last four windows, and `--fifo` a "best
 been the most accurate. Only the recent pace is used because it
 backtested closest: from 2026-05 and 2026-08 cutoffs, median paces (which
 still hold the fast early-2026 months) over-predicted clearance badly.
-`--summarize --fifo COHORT` just bolds COHORT's rows. Times show as the
+Times show as the
 month they come to by default (`fmt_when`: the latest period plus the
 rounded months, `2028-04` for 17m from 2026-11; `never` stays, and past year
-9999 it falls back to a duration). `--durations` (with `--summarize` or
-`--fifo`, an error alone) shows how long instead, as `fmt_duration` years and
+9999 it falls back to a duration). `--durations` (an error with
+`--interactive`) shows how long instead, as `fmt_duration` years and
 months (`1y 5m`, `11m`, `2y`; past `99y 11m` just the years). `print_report`
 sets the module-level `DATES_FROM` (through the `dates_from` context manager)
 only while the report prints, so code called directly gets durations; the
 widget feed asks for dates. Both tables go through
 `print_columns` (about 55 and 52 columns on today's data); narrower, the
 counts become a sentence per cohort (`summary_lead_text`) and the estimates
-a heading per cohort with a line per cell. In `--fifo`'s estimate rows, too
+a heading per cohort with a line per cell. In `print_target`'s estimate rows, too
 narrow a terminal puts each label and its pace on a line above the cells.
-The explanations are `bullets` lists: `sweep_items` (with
-`leftover_prose`), `unsettled_note` and `BACKTEST_NOTE` are shared with
-`--fifo`, so a wording change there shows up in both. `ARRIVES_ITEM` is
-`--fifo`'s only; `summary_items` has its own, plainer column notes. (The older random-order
+The explanations are `bullets` lists (`summary_items`, `estimate_items`,
+`sweep_items` with `leftover_prose`); `ARRIVES_ITEM` went with the merge,
+since `summary_items` explains the arrival. (The older random-order
 `--summarize` table, with 50%/100% times and a best guess, was removed on
 2026-11-20, and the 25-75% range cell with it.)
 
@@ -229,10 +240,10 @@ before it's measured, or column widths and `textwrap` will miscount. A test
 pins this: stripping the escapes from coloured output must give back the plain
 report byte for byte.
 
-To exercise the analysis logic without the interactive prompt, pipe input in:
+To exercise the `--interactive` analysis without typing at the prompt, pipe input in:
 
 ```bash
-echo "10200, 10500, 11300, 11700, 13000, 14500, 15800" | python3 burndown.py
+echo "10200, 10500, 11300, 11700, 13000, 14500, 15800" | python3 burndown.py --interactive
 ```
 
 Run the tests with:
@@ -299,7 +310,7 @@ bytecode caching (`python3 -B`, `PYTHONDONTWRITEBYTECODE=1`) and clear
 size and mtime-second unchanged, so Python silently reuses the stale `.pyc` and
 every such mutant appears to survive.
 
-The own-cohort block and the `--summarize` and `--fifo` output are pinned by
+The own-cohort block and the report are pinned by
 exact-text tests (added to kill text, padding and alignment mutants), so a
 wording or layout change there means updating those expected strings too.
 
@@ -340,7 +351,7 @@ launchctl bootout gui/$(id -u)/com.jade.flpt-watch; ~/Developer/ops/install-all.
 `check_once` also calls `write_widget` (after history, before the state is saved, and like history a failure is only logged).
 `burndown.write_widget` writes `widget_feed(DEFAULT_COHORT)` to `WIDGET_PATH`, which is
 `citizenship.json` in Scriptable's iCloud folder, and skips the write when that folder doesn't exist.
-The feed (version 3) holds the cohort's `--summarize` cells for `WIDGET_FIELDS` (arrives, sweep ends,
+The feed (version 3) holds the cohort's report cells for `WIDGET_FIELDS` (arrives, sweep ends,
 leftovers half), each (`widget_row`) a label, its value as the chance by then (`22%`), and its detail
 as `by` the month in `short_month` form (`by 4'28` for 2028-04); a time that's a word has
 that word as its value and no detail. Until 2026-11-25 it had four rows, each a date with
@@ -396,11 +407,8 @@ History and prompt handling, ahead of the analysis pipeline:
 - `color_enabled` / `paint` — see the colour notes above.
 - `main(argv=())` takes its arguments explicitly (`__main__` passes
   `sys.argv[1:]`) so the tests, which run under unittest's own argv, can call
-  it bare. `print_report` picks the report: `--summarize` (with or without
-  `--fifo`) goes to `print_fifo_summary`, which prints
-  `print_counts` and `print_split`; `--fifo` goes to
-  `print_fifo`, which prints `print_fifo_table`, `print_order` and
-  `print_estimates` in turn.
+  it bare. `print_report` prints the report (`print_fifo`) unless
+  `--interactive`, when `main()` goes on to the prompt.
 
 The analysis itself is a small pipeline of pure functions, which `main()`
 wires to stdin/stdout:

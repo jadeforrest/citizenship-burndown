@@ -1,52 +1,25 @@
 #!/usr/bin/env python3
 """
-Burn-down timeline analyzer.
+When each citizenship cohort is likely to be processed.
 
-Enter a comma-separated list of backlog counts (the number of people ahead of
-you in line), where the FIRST number is the current month and each number after
-it is the previous month. Example:
+    python3 burndown.py [COHORT]
 
-    9700, 10200, 10500, 11300, 11700, 13000, 14500, 15800
+reads the history flpt_watch.py records (flpt_history.csv) and prints, for
+every settled cohort from 2025-01, when an oldest-first sweep (on top of a
+steady age-blind trickle) reaches it, when it finishes with it, and when half
+of those it leaves are processed, each with your chance of having been
+processed by then. COHORT (default 2025-07) is then shown in detail: its
+50/75/90% times with and without the sweep, and how close to oldest-first
+the processing has been. Times are the month (YYYY-MM) they come to;
+--durations shows how long from the latest period instead (1y 5m).
 
-The script figures out how many people are processed per month, computes low /
-likely / high estimates from the stats, and prints how much time is probably
-left before the queue clears.
+    python3 burndown.py --interactive
 
-Each estimate is broken out by how much of the cohort ahead of you has been
-processed (25% / 50% / 75% / 100%). If applications are pulled in roughly
-random order rather than strict FIFO, the 50% column is the point where you'd
-have a coin-flip chance of already being done, and 100% is the point where
-everyone ahead of you is finished.
-
-A final section flips that around: instead of "how long until I'm X% likely to
-be done", it reports the per-month odds — what your chance of being pulled was
-in each month of the window, and your chance of being done by a few fixed
-horizons.
-
-The report fits itself to the terminal: wide windows get the full side-by-side
-tables, medium ones get abbreviated cells, and narrow ones get one block per
-scenario. Nothing is dropped at any width. Set BURNDOWN_WIDTH to override the
-detected width.
-
-If flpt_watch.py has been recording flpt_history.csv, the prompt also offers
-each cohort it has tracked: type a cohort (2025-07) or its menu number and its
-monthly people-ahead counts are read out newest first, as if you'd pasted them.
-
-    python3 burndown.py --summarize
-
-skips the prompt and prints a one-line summary for every cohort from 2025-01:
-its own applicants cleared last month, and the recent and median paces with
-the months to 50% and 100% cleared.
-
-    python3 burndown.py --fifo [COHORT]
-
-skips the prompt and reports how close to oldest-first the processing is:
-each settled cohort's own monthly clearance, a 0 (random) to 1 (oldest-first)
-score, and months until COHORT (default 2025-07) is likely processed under a
-model of an oldest-first sweep on top of a steady age-blind background.
-
-Those times are the month (YYYY-MM) they come to, counted from the latest
-period; add --durations to either to show how long from it instead (1y 5m).
+is the older random-order analyzer: enter a comma-separated list of backlog
+counts (people ahead of you, newest month first), or a tracked cohort or its
+menu number, and it prints low / likely / high times for 25-100% of the queue
+ahead to clear, and your odds month by month. The report fits itself to the
+terminal; set BURNDOWN_WIDTH to override the detected width.
 """
 
 import argparse
@@ -1713,16 +1686,11 @@ def bullets(items: list[str], width: int) -> str:
     return "\n".join(wrap(f"- {item}", width, hanging="  ") for item in items)
 
 
-ARRIVES_ITEM = ("Arrives: months until the sweep reaches the cohort ('now' if "
-                "it's working through it, 'passed' if it has finished with it).")
-
-
 def estimate_items(odds: tuple[float, ...]) -> list[str]:
     """What the estimate columns mean, for the chances shown: one item each."""
     shown = [f"{q:.0%}" for q in odds]
     listed = ", ".join(shown[:-1]) + f" and {shown[-1]}" if len(shown) > 1 else shown[0]
-    return [ARRIVES_ITEM,
-            f"{listed}: months until your chance of having been processed "
+    return [f"{listed}: months until your chance of having been processed "
             "reaches that. The 50% is about when the sweep finishes with your "
             "cohort."]
 
@@ -1774,53 +1742,43 @@ BACKTEST_NOTE = ("The backtest only checks 1-6 months ahead, and the sweep "
 
 def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
                target: str = DEFAULT_COHORT) -> None:
-    """How close to oldest-first processing is, and what that means for `target`."""
-    names = fifo_start(cohorts, "PROCESSING ORDER", width)
+    """
+    The report: every settled cohort's estimates, then `target`'s in detail,
+    then how close to oldest-first processing is, then how the model works.
+    """
+    names = fifo_start(cohorts, "WHEN EACH COHORT IS PROCESSED", width)
     if not names:
         return
     last = latest_period(cohorts)
-    rows = cohort_rates(cohorts, names, last)
-    print(wrap(f"Each cohort's own applicants still waiting in {last}, and the "
-               "share of them cleared per month (compounded) over the last "
-               f"{' and '.join(map(str, OWN_WINDOWS))} months. 'earlier' is "
-               f"everyone who applied before {names[0]}. "
-               + unsettled_note(names), width))
-    print()
-    print_fifo_table(rows, target, width)
-    trickle, _ = fifo_background(cohorts, names, last)
     rates = model_rates(cohorts, names, last)
-    leftover = (None if rates.leftover_months is None
-                else leftover_rate(cohorts, names, last, rates.leftover_months))
-    print()
-    labels = [f"Trickle, last {RECENT_MONTHS} mo",
-              f"Leftovers, last {rates.leftover_months or RECENT_MONTHS} mo"]
-    for label, rate in zip(labels, (trickle, leftover)):
-        print(stat_line(label, "n/a" if rate is None else f"{fmt_pct(rate)} a month",
-                        width, pad=max(map(len, labels)) + 2))
-
-    own = own_cohort(cohorts, target).waiting
-    if last not in own or target not in cohorts:
+    print_every_cohort(cohorts, names, last, rates, width, target)
+    known = target in cohorts and last in own_cohort(cohorts, target).waiting
+    if known:
+        print_target(cohorts, names, last, rates, target, width)
+    else:
         print()
         print(wrap(f"No {target} own-cohort figure for {last}, so there's no "
                    "order score or estimate for it.", width))
-        print(paint("=" * width, "cyan") + "\n")
-        return
-    newer = [c for c in names if c > target]
-    scores = [s for n in OWN_WINDOWS
-              if (s := order_score(cohorts, target, newer, last, n))]
-    print("\n" + paint("Oldest-first or random?", "bold", "cyan"))
-    print_order(scores, target, newer, width)
+    print_order_section(cohorts, names, last, rates, target if known else None,
+                        width)
+    print("\n" + paint("How the model works", "bold", "cyan"))
+    pace_words = ("files at a pace too new to measure" if rates.pace is None else
+                  f"{fmt_count(max(rates.pace, 0))} files a month (last "
+                  f"{RECENT_MONTHS} months)")
+    print(bullets(sweep_items(rates, pace_words, names[0])
+                  + [unsettled_note(names), BACKTEST_NOTE], width))
+    print(paint("=" * width, "cyan") + "\n")
 
+
+def print_target(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+                 last: str, rates: Rates, target: str, width: int) -> None:
+    """When `target` is likely to be processed: 50/75/90% with and without the sweep."""
     pos = position(cohorts, target, last)
     ahead = dict(cohorts[target])[last]
     print("\n" + paint(f"When will {target} be processed?", "bold", "cyan"))
-    print(bullets(estimate_items(ESTIMATE_ODDS)
-                  + [f"{times_note(last)}."], width))
-    print("\nHow the model works:")
-    print(bullets(sweep_items(rates, "files at the row's pace", names[0])
-                  + [BACKTEST_NOTE], width))
+    print(bullets(estimate_items(ESTIMATE_ODDS), width))
     print()
-    print(wrap(f"For {target}: of the {fmt_count(ahead)} ahead, "
+    print(wrap(f"Of the {fmt_count(ahead)} ahead, "
                f"{fmt_count(pos.work)} are still to be swept, then the sweep "
                f"takes {fmt_count(pos.take)} of its {fmt_count(pos.waiting)} "
                "(fewer by then, as the trickle thins both). The rows: no sweep "
@@ -1831,7 +1789,38 @@ def print_fifo(cohorts: dict[str, list[tuple[str, float]]], width: int,
     print_estimates(fifo_paces(cohorts, names, last, rates.background),
                     rates.background, pos, width, rates.leftover,
                     passed_by(cohorts, target, last))
-    print(paint("=" * width, "cyan") + "\n")
+
+
+def print_order_section(cohorts: dict[str, list[tuple[str, float]]],
+                        names: list[str], last: str, rates: Rates,
+                        target: str | None, width: int) -> None:
+    """
+    Each cohort's own clearance, the trickle and leftover rates, and (with a
+    `target` that has figures) its oldest-first score.
+    """
+    print("\n" + paint("Processing order", "bold", "cyan"))
+    print(wrap(f"Each cohort's own applicants still waiting in {last}, and the "
+               "share of them cleared per month (compounded) over the last "
+               f"{' and '.join(map(str, OWN_WINDOWS))} months. 'earlier' is "
+               f"everyone who applied before {names[0]}.", width))
+    print()
+    print_fifo_table(cohort_rates(cohorts, names, last), target or "", width)
+    trickle, _ = fifo_background(cohorts, names, last)
+    leftover = (None if rates.leftover_months is None
+                else leftover_rate(cohorts, names, last, rates.leftover_months))
+    print()
+    labels = [f"Trickle, last {RECENT_MONTHS} mo",
+              f"Leftovers, last {rates.leftover_months or RECENT_MONTHS} mo"]
+    for label, rate in zip(labels, (trickle, leftover)):
+        print(stat_line(label, "n/a" if rate is None else f"{fmt_pct(rate)} a month",
+                        width, pad=max(map(len, labels)) + 2))
+    if target is None:
+        return
+    newer = [c for c in names if c > target]
+    scores = [s for n in OWN_WINDOWS
+              if (s := order_score(cohorts, target, newer, last, n))]
+    print("\n" + paint("Oldest-first or random?", "bold", "cyan"))
+    print_order(scores, target, newer, width)
 
 
 # --summarize shows each cohort's estimates at the recent RECENT_MONTHS pace
@@ -1959,33 +1948,21 @@ def summary_items(names: list[str], last: str) -> list[str]:
         "months."]
 
 
-def print_fifo_summary(cohorts: dict[str, list[tuple[str, float]]], width: int,
-                       target: str = DEFAULT_COHORT) -> None:
-    """The --fifo estimates for every settled cohort, at its recent pace."""
-    names = fifo_start(cohorts, "WHEN EACH COHORT IS PROCESSED", width)
-    if not names:
-        return
-    last = latest_period(cohorts)
-    rates = model_rates(cohorts, names, last)
+def print_every_cohort(cohorts: dict[str, list[tuple[str, float]]],
+                       names: list[str], last: str, rates: Rates, width: int,
+                       target: str) -> None:
+    """Every settled cohort's counts and estimates, `target`'s row bold."""
     rows = fifo_summary_rows(cohorts, names, last, rates)
-    pace = rates.pace
     print(wrap(f"For each cohort from {names[0]}, in {last}:", width))
     print(bullets(summary_items(names, last), width))
-    print("\nHow the model works:")
-    pace_words = ("files at a pace too new to measure" if pace is None else
-                  f"{fmt_count(max(pace, 0))} files a month (last "
-                  f"{RECENT_MONTHS} months)")
-    print(bullets(sweep_items(rates, pace_words, names[0])
-                  + [unsettled_note(names), BACKTEST_NOTE], width))
     print()
     if not rows:
         print(wrap(f"No settled cohort has figures for {last}.", width))
-    else:
-        print_counts(rows, width, target)
-        print()
-        print(paint("Estimates:", "bold"))
-        print_split(rows, width, target)
-    print(paint("=" * width, "cyan") + "\n")
+        return
+    print_counts(rows, width, target)
+    print()
+    print(paint("Estimates:", "bold"))
+    print_split(rows, width, target)
 
 
 # The iPhone widget (scriptable/citizenship.js) reads this; flpt_watch writes it
@@ -2139,39 +2116,41 @@ def cohort_arg(text: str) -> str:
 
 def parse_args(argv) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Estimate how long the queue ahead of you will take to clear.")
+        description="When each cohort in the processing-times history is "
+                    "likely to be processed.")
     parser.add_argument(
-        "--summarize", action="store_true",
-        help=f"no prompt: when each settled cohort from {SUMMARY_FROM} in "
-             f"{HISTORY_PATH.name} is likely to be processed, at the sweep's "
-             f"recent pace (with --fifo COHORT, that row is bold)")
-    parser.add_argument(
-        "--fifo", nargs="?", const=DEFAULT_COHORT, metavar="COHORT",
-        type=cohort_arg,
-        help=f"no prompt: how close to oldest-first processing is, and when "
-             f"COHORT (default {DEFAULT_COHORT}) is likely to be processed")
+        "cohort", nargs="?", default=DEFAULT_COHORT, type=cohort_arg,
+        help=f"the cohort to show in detail (default {DEFAULT_COHORT})")
     parser.add_argument(
         "--durations", action="store_true",
-        help="with --summarize or --fifo: show each time as how long from the "
-             "latest period (1y 5m) rather than the month (YYYY-MM) it comes to")
+        help="show each time as how long from the latest period (1y 5m) "
+             "rather than the month (YYYY-MM) it comes to")
+    parser.add_argument(
+        "--interactive", action="store_true",
+        help="instead of the report, prompt for a cohort or pasted counts and "
+             "estimate them as a random-order queue")
+    # The two reports these named were merged into the default one.
+    parser.add_argument("--summarize", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--fifo", nargs="?", const=DEFAULT_COHORT, type=cohort_arg,
+                        help=argparse.SUPPRESS)
     args = parser.parse_args(list(argv))
-    if args.durations and not (args.summarize or args.fifo):
-        parser.error("--durations needs --summarize or --fifo")
+    if args.durations and args.interactive:
+        parser.error("--durations doesn't apply to --interactive")
     return args
 
 
 def print_report(args: argparse.Namespace,
                  cohorts: dict[str, list[tuple[str, float]]], width: int) -> bool:
     """
-    The report --summarize and/or --fifo asked for; False if neither did.
-    Unless --durations, DATES_FROM is the latest period while it prints.
+    The report, for --fifo's cohort or else the positional one; False, printing
+    nothing, with --interactive. Unless --durations, DATES_FROM is the latest
+    period while it prints.
     """
+    if args.interactive:
+        return False
     with dates_from(None if args.durations or not cohorts else latest_period(cohorts)):
-        if args.summarize:
-            print_fifo_summary(cohorts, width, args.fifo or DEFAULT_COHORT)
-        elif args.fifo:
-            print_fifo(cohorts, width, args.fifo)
-    return bool(args.summarize or args.fifo)
+        print_fifo(cohorts, width, args.fifo or args.cohort)
+    return True
 
 
 def main(argv=()) -> None:

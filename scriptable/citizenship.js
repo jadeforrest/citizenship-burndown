@@ -2,7 +2,7 @@
 //
 // Reads citizenship.json from Scriptable's iCloud folder, which flpt_watch.py
 // writes hourly (burndown.write_widget) once that folder exists: the 2025-07
-// cohort's --summarize estimates (sweep arrives, sweep done, leftovers half)
+// cohort's report estimates (sweep arrives, sweep done, leftovers half)
 // at the last 3 months' rates: each as your chance of having been processed
 // by then, with "by" its month (M'YY) under it.
 //

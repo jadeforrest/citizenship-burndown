@@ -1,5 +1,5 @@
 """
-Backtest the --fifo model against months it didn't see.
+Backtest the sweep model against months it didn't see.
 
 For each cutoff period, the history is cut off there, each settled cohort's
 share of its own applicants cleared over the next 1..MAX_HORIZON months is
