@@ -1617,12 +1617,14 @@ For each cohort from 2025-05, in 2026-10:
 - Leftover: the share of those waiting that the sweep will leave behind. Blank
   for cohorts it hasn't reached, where it's 50% by assumption.
 - % fifo: how close to oldest-first processing has been over the last 3
-  months. 0% is random order, 100% strictly oldest first. For the newest
-  cohorts it's mostly rounding.
+  months, against the cohorts newer than it. 0% is random order, 100% strictly
+  oldest first, below 0% the newer files went first. For the newest cohorts
+  it's mostly rounding.
 - Estimates: your chance of having been processed by when the sweep arrives
   ('now' if it's in the cohort, 'passed' if it's done with it), by when it
   ends (after that you're a leftover), and by when half the leftovers have
-  been processed.
+  been processed. 'never' means the sweep or the leftovers aren't moving, '-'
+  that there's no estimate.
 - All times are how long from 2026-10, in years and months, at the rates over
   the last 3 months.
 
@@ -1785,6 +1787,9 @@ after its bulge yet.
         # Leftovers that never clear have no chance to read at "never".
         self.assertEqual(b.split_cells(b.Rates(0.0, 0.0, 100.0), gone)[2],
                          O("never", ""))
+        # Nobody of its own left to take: the sweep never ends with it.
+        self.assertEqual(b.split_cells(fast, b.Position(100, 0, 0))[1:],
+                         [O("never", ""), O("never", "")])
         behind = b.Position(1400, 1000, 500)
         arrive = b.arrival_months(fast, behind)
         self.assertEqual(b.split_cells(fast, behind)[0],

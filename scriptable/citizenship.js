@@ -29,7 +29,7 @@ function addText(stack, text, size, color, bold = false, minScale = 0.6) {
   return t;
 }
 
-// A one-line row of fixed height, so each kind of line (date, duration,
+// A one-line row of fixed height, so each kind of line (chance, date,
 // label) sits at the same height in every column even when its text shrinks.
 function line(stack, text, size, color, bold = false, minScale = 0.6) {
   const cell = stack.addStack();

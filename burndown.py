@@ -885,8 +885,8 @@ def fmt_duration(months: float) -> str:
 
 
 # The period --summarize and --fifo count their times from, so fmt_when()
-# shows the month a time comes to; None (--durations, and the widget) shows
-# how long from now.
+# shows the month a time comes to; None (--durations, and code called
+# directly) shows how long from now.
 DATES_FROM: str | None = None
 
 
@@ -1569,15 +1569,17 @@ def split_cells(rates: Rates, pos: Position,
         return [Odds(word, ""), Odds(word, ""), Odds("-", "")]
     pace = rates.pace or 0.0
     split = sweep_split(rates.background, pos, pace, rates.leftover)
-    def odds(months: float) -> Odds:
-        chance = sweep_chance(months, rates.background, pos, pace, rates.leftover)
-        return Odds(fmt_when(months),
-                    fmt_share(chance) if math.isfinite(months) else "")
+    def odds(months: float, chance: float | None = None) -> Odds:
+        if not math.isfinite(months):
+            return Odds(fmt_when(months), "")
+        if chance is None:
+            chance = sweep_chance(months, rates.background, pos, pace, rates.leftover)
+        return Odds(fmt_when(months), fmt_share(chance))
     half = odds(split.half)
     if word == "passed":
         return [Odds(word, ""), Odds("-", ""), half]
     arrive = Odds(word, "") if word == "now" else odds(arrival_months(rates, pos))
-    return [arrive, odds(split.ends), half]
+    return [arrive, odds(split.ends, split.done), half]
 
 
 def odds_text(odds: Odds) -> str:
@@ -1945,12 +1947,14 @@ def summary_items(names: list[str], last: str) -> list[str]:
         f"behind. Blank for cohorts it hasn't reached, where it's "
         f"{STRAGGLERS:.0%} by assumption.",
         f"% fifo: how close to oldest-first processing has been over the last "
-        f"{RECENT_MONTHS} months. 0% is random order, 100% strictly oldest "
-        "first. For the newest cohorts it's mostly rounding.",
+        f"{RECENT_MONTHS} months, against the cohorts newer than it. 0% is "
+        "random order, 100% strictly oldest first, below 0% the newer files "
+        "went first. For the newest cohorts it's mostly rounding.",
         "Estimates: your chance of having been processed by when the sweep "
         "arrives ('now' if it's in the cohort, 'passed' if it's done with "
         "it), by when it ends (after that you're a leftover), and by when "
-        "half the leftovers have been processed.",
+        "half the leftovers have been processed. 'never' means the sweep "
+        "or the leftovers aren't moving, '-' that there's no estimate.",
         f"{times_note(last)}, at the rates over the last {RECENT_MONTHS} "
         "months."]
 

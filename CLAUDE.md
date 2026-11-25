@@ -207,14 +207,15 @@ rounded months, `2028-04` for 17m from 2026-11; `never` stays, and past year
 months (`1y 5m`, `11m`, `2y`; past `99y 11m` just the years). `print_report`
 sets the module-level `DATES_FROM` (through the `dates_from` context manager)
 only while the report prints, so code called directly gets durations; the
-widget feed asks for both. Both tables go through
-`print_columns` (about 55 and 70 columns on today's data); narrower, the
+widget feed asks for dates. Both tables go through
+`print_columns` (about 55 and 52 columns on today's data); narrower, the
 counts become a sentence per cohort (`summary_lead_text`) and the estimates
 a heading per cohort with a line per cell. In `--fifo`'s estimate rows, too
 narrow a terminal puts each label and its pace on a line above the cells.
-The explanations are `bullets` lists: `ARRIVES_ITEM`, `sweep_items` (with
+The explanations are `bullets` lists: `sweep_items` (with
 `leftover_prose`), `unsettled_note` and `BACKTEST_NOTE` are shared with
-`--fifo`, so a wording change there shows up in both. (The older random-order
+`--fifo`, so a wording change there shows up in both. `ARRIVES_ITEM` is
+`--fifo`'s only; `summary_items` has its own, plainer column notes. (The older random-order
 `--summarize` table, with 50%/100% times and a best guess, was removed on
 2026-11-20, and the 25-75% range cell with it.)
 
