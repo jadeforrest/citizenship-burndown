@@ -181,12 +181,16 @@ try others.
   `fifo_percent`, clamped to ±999%; for the newest cohorts it's mostly
   rounding).
 - The estimates (`print_split`, `SPLIT_HEADS`, cells from `split_cells`):
-  arrives, then `sweep_split` — when the sweep finishes with the cohort, the
-  chance you've been processed by then (by the trickle or the sweep, read off
-  `sweep_chance`), and when half of those it leaves have been processed at
-  the leftover rate. The outcome has two humps, done by the sweep's end or a
-  leftover with a long tail, so these replaced the 50%/90% columns on
-  2026-11-20 (a 50%-90% range hid that; `--fifo` still shows 50/75/90%).
+  three times, each an `Odds` (the time, and `sweep_chance` by it as a
+  percent, drawn as one cell by `odds_text`): when the sweep arrives, when it
+  finishes with the cohort, and when half of those it leaves have been
+  processed at the leftover rate (both from `sweep_split`). A time that's a
+  word (`now`, `passed`, `-`, `never`) has no chance. The outcome has two
+  humps, done by the sweep's end or a leftover with a long tail, so these
+  replaced the 50%/90% columns on 2026-11-20 (a 50%-90% range hid that;
+  `--fifo` still shows 50/75/90%). Until 2026-11-25 there were four columns,
+  the chance only at the sweep's end ("done by then") and the leftovers'
+  time headed "if left, half by".
 
 Each estimate is at the rates over the latest `RECENT_MONTHS` window
 (`model_rates` at the latest period). Until 2026-11-24 each cell also showed
@@ -335,13 +339,15 @@ launchctl bootout gui/$(id -u)/com.jade.flpt-watch; ~/Developer/ops/install-all.
 `check_once` also calls `write_widget` (after history, before the state is saved, and like history a failure is only logged).
 `burndown.write_widget` writes `widget_feed(DEFAULT_COHORT)` to `WIDGET_PATH`, which is
 `citizenship.json` in Scriptable's iCloud folder, and skips the write when that folder doesn't exist.
-The feed holds the cohort's `--summarize` cells for `WIDGET_FIELDS` (arrives, sweep ends,
-done by then, if left half by), each a label, its value as a date in `short_month` form (`4'28` for 2028-04), and its detail
-as a duration (`""` when it would repeat the value, as for the done-by-then share).
+The feed (version 3) holds the cohort's `--summarize` cells for `WIDGET_FIELDS` (arrives, sweep ends,
+leftovers half), each (`widget_row`) a label, its value as the chance by then (`22%`), and its detail
+as `by` the month in `short_month` form (`by 4'28` for 2028-04); a time that's a word has
+that word as its value and no detail. Until 2026-11-25 it had four rows, each a date with
+its duration under it.
 [scriptable/citizenship.js](scriptable/citizenship.js) draws them as columns of
-date, small duration and label, each line in a fixed-height stack so the three
+chance, date and label, each line in a fixed-height stack so the three
 kinds of line line up across the columns. The values never shrink to fit, so
-they are all one size (26pt medium, 13pt small). To install it, copy it to
+they are all one size (26pt medium, 16pt small). To install it, copy it to
 `~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/Documents/Citizenship.js`, then add
 a Scriptable widget on the iPhone and pick that script. The tests patch `burndown.WIDGET_PATH`,
 so they never write to iCloud. How to change and deploy the widget:

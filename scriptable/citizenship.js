@@ -2,9 +2,9 @@
 //
 // Reads citizenship.json from Scriptable's iCloud folder, which flpt_watch.py
 // writes hourly (burndown.write_widget) once that folder exists: the 2025-07
-// cohort's --summarize estimates (sweep arrives, sweep done, done by
-// then, if left half by) at the last 3 months' rates: each as a month (M'YY), with
-// how long from now that is in small text under it.
+// cohort's --summarize estimates (sweep arrives, sweep done, leftovers half)
+// at the last 3 months' rates: each as your chance of having been processed
+// by then, with "by" its month (M'YY) under it.
 //
 // Small, medium and lock-screen rectangular sizes.
 
@@ -46,16 +46,16 @@ function homeWidget(feed, family) {
   w.addSpacer();
   const row = w.addStack();
   row.topAlignContent();
-  // Values never shrink, so every column's (12'28, 64%) is the same size;
-  // this size fits five characters in a quarter of the widget.
-  const big = family === "small" ? 13 : 26;
+  // Values never shrink, so every column's chance (64%) is the same size.
+  const big = family === "small" ? 16 : 26;
+  const small = family === "small";
   feed.rows.forEach((r, i) => {
     if (i > 0) row.addSpacer();
     const s = row.addStack();
     s.layoutVertically();
     line(s, r.value, big, TEXT, true, 1);
-    line(s, r.detail || " ", 13, DIM);
-    line(s, r.label, family === "small" ? 11 : 15, DIM);
+    line(s, r.detail || " ", small ? 12 : 16, DIM);
+    line(s, r.label, small ? 10 : 13, DIM);
   });
   w.refreshAfterDate = new Date(Date.now() + 6 * 3600e3);
   return w;
@@ -65,7 +65,7 @@ function lockWidget(feed) {
   const w = new ListWidget();
   addText(w, feed.title, 13, Color.white(), true);
   for (const r of feed.rows) {
-    const extra = r.detail ? ` (${r.detail})` : "";
+    const extra = r.detail ? ` ${r.detail}` : "";
     addText(w, `${r.label}: ${r.value}${extra}`, 13, Color.white());
   }
   return w;

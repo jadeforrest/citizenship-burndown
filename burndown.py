@@ -1546,26 +1546,43 @@ def sweep_split(background: float, pos: Position, pace: float,
                                      if rest > 0 else float("inf")))
 
 
-SPLIT_HEADS = ("arrives", "sweep ends", "done by then", "if left, half by")
+SPLIT_HEADS = ("arrives", "sweep ends", "leftovers half")
+
+
+class Odds(NamedTuple):
+    """A SPLIT_HEADS time, and your chance of having been processed by it."""
+    when: str       # fmt_when(), or a word: now, passed, -, never
+    chance: str     # fmt_share(), "" where there's no time to read it at
 
 
 def split_cells(rates: Rates, pos: Position,
-                passed: bool | None = None) -> list[str]:
+                passed: bool | None = None) -> list[Odds]:
     """
-    One cohort's SPLIT_HEADS as text at `rates`: when the sweep arrives,
-    then sweep_split(). Where the arrival is a word (now, passed, -, never)
-    it stands alone; a cohort the sweep has passed keeps only its leftovers'
-    time.
+    One cohort's SPLIT_HEADS at `rates`, each with sweep_chance() by then:
+    when the sweep arrives, when it finishes with the cohort (sweep_split()),
+    and when half of whoever it leaves have been processed. Where the
+    arrival is a word (now, passed, -, never) it has no chance; a cohort the
+    sweep has passed keeps only its leftovers' time.
     """
     word = arrival_text(rates.background, pos, rates.pace, passed)
     if word in ("-", "never"):
-        return [word, word, "-", "-"]
-    split = sweep_split(rates.background, pos, rates.pace or 0.0, rates.leftover)
-    half = fmt_when(split.half)
+        return [Odds(word, ""), Odds(word, ""), Odds("-", "")]
+    pace = rates.pace or 0.0
+    split = sweep_split(rates.background, pos, pace, rates.leftover)
+    def odds(months: float) -> Odds:
+        chance = sweep_chance(months, rates.background, pos, pace, rates.leftover)
+        return Odds(fmt_when(months),
+                    fmt_share(chance) if math.isfinite(months) else "")
+    half = odds(split.half)
     if word == "passed":
-        return [word, "-", "-", half]
-    arrive = word if word == "now" else fmt_when(arrival_months(rates, pos))
-    return [arrive, fmt_when(split.ends), fmt_share(split.done), half]
+        return [Odds(word, ""), Odds("-", ""), half]
+    arrive = Odds(word, "") if word == "now" else odds(arrival_months(rates, pos))
+    return [arrive, odds(split.ends), half]
+
+
+def odds_text(odds: Odds) -> str:
+    """An Odds as one table cell: "2028-04  22%", or the time alone."""
+    return f"{odds.when}  {odds.chance:>3}" if odds.chance else odds.when
 
 
 def arrival_months(rates: Rates, pos: Position) -> float:
@@ -1830,7 +1847,7 @@ class FifoSummaryRow(NamedTuple):
     waiting: str
     leftover: str
     fifo: str
-    split: tuple[str, ...] = ()           # split_cells(), under SPLIT_HEADS
+    split: tuple[Odds, ...] = ()          # split_cells(), under SPLIT_HEADS
 
 
 def leftover_percent(pos: Position) -> str:
@@ -1908,38 +1925,32 @@ def print_counts(rows: list[FifoSummaryRow], width: int, target: str) -> None:
 
 def print_split(rows: list[FifoSummaryRow], width: int, target: str) -> None:
     """The estimates table; narrower than that, one line per cell per cohort."""
-    if print_columns([(r.cohort, r.split) for r in rows], SPLIT_HEADS, width, target):
+    table = [(r.cohort, tuple(map(odds_text, r.split))) for r in rows]
+    if print_columns(table, SPLIT_HEADS, width, target):
         return
     head_w = max(map(len, SPLIT_HEADS))
-    for r in rows:
-        print(paint(f"  {r.cohort}", "bold"))
-        for head, cell in zip(SPLIT_HEADS, r.split):
+    for cohort, cells in table:
+        print(paint(f"  {cohort}", "bold"))
+        for head, cell in zip(SPLIT_HEADS, cells):
             print(f"    {head:>{head_w}}  {estimate_group([cell], [len(cell)])}")
 
 
 def summary_items(names: list[str], last: str) -> list[str]:
     """What each --summarize column means."""
     return [
-        "Ahead: people ahead of the cohort. To sweep: how many of them the "
-        "sweep still has to clear before it reaches the cohort. Waiting: the "
-        "cohort's own applicants still waiting.",
+        "Ahead: people ahead of the cohort. To sweep: those the sweep still "
+        "has to clear before it gets to the cohort. Waiting: the cohort's own "
+        "applicants still waiting.",
         "Leftover: the share of those waiting that the sweep will leave "
-        "behind, roughly your chance of being one of them. Shown for the "
-        "cohort the sweep is in and those it has passed; behind the sweep "
-        f"it's {STRAGGLERS:.0%} by assumption.",
-        f"% fifo: how close to oldest-first clearing has been for the cohort "
-        f"over the last {RECENT_MONTHS} months, against the settled cohorts "
-        "newer than it. 0% is random order, 100% means every file cleared "
-        "(other than its own) was ahead of it, below 0% the newer files went "
-        "first. The newest cohorts "
-        "have few files to compare, so theirs is mostly rounding.",
-        ARRIVES_ITEM,
-        "Sweep ends: months until the sweep finishes with the cohort. Done "
-        "by then: your chance of having been processed by that point, by the "
-        "trickle or the sweep.",
-        "If left, half by: if you haven't been processed by then, you're a "
-        "leftover, and this is the months until half of the leftovers have "
-        "been processed.",
+        f"behind. Blank for cohorts it hasn't reached, where it's "
+        f"{STRAGGLERS:.0%} by assumption.",
+        f"% fifo: how close to oldest-first processing has been over the last "
+        f"{RECENT_MONTHS} months. 0% is random order, 100% strictly oldest "
+        "first. For the newest cohorts it's mostly rounding.",
+        "Estimates: your chance of having been processed by when the sweep "
+        "arrives ('now' if it's in the cohort, 'passed' if it's done with "
+        "it), by when it ends (after that you're a leftover), and by when "
+        "half the leftovers have been processed.",
         f"{times_note(last)}, at the rates over the last {RECENT_MONTHS} "
         "months."]
 
@@ -1979,31 +1990,36 @@ WIDGET_PATH = Path("~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/"
                    "Documents/citizenship.json").expanduser()
 # The SPLIT_HEADS the widget shows, and what it calls them.
 WIDGET_FIELDS = (("arrives", "Sweep arrives"), ("sweep ends", "Sweep done"),
-                 ("done by then", "Done by then"),
-                 ("if left, half by", "If left, half by"))
+                 ("leftovers half", "Leftovers half"))
 
 
 def widget_feed(cohorts: dict[str, list[tuple[str, float]]],
                 cohort: str = DEFAULT_COHORT) -> dict | None:
     """
     `cohort`'s --summarize estimates as the widget's JSON: a title, the period
-    they're from, and one row per WIDGET_FIELDS: its month as short_month()
-    (value) and how
-    long from the period that is (detail, "" when it reads the same). None if it isn't settled or
-    has no figure for the latest period.
+    they're from, and one row per WIDGET_FIELDS: your chance of having been
+    processed by then (value; the time itself where it's a word with no
+    chance, such as now or passed) and "by" its month as short_month()
+    (detail, "" with no chance). None if it isn't settled or has no figure
+    for the latest period.
     """
     names = settled_cohorts(cohorts)
     if cohort not in names:
         return None
     last = latest_period(cohorts)
-    dates, lengths = (widget_cells(cohorts, names, last, cohort, start)
-                      for start in (last, None))
-    if dates is None:
+    cells = widget_cells(cohorts, names, last, cohort)
+    if cells is None:
         return None
-    return {"version": 2, "title": f"Citizenship {cohort}", "period": last,
-            "rows": [{"label": label, "value": short_month(dates[head]),
-                      "detail": "" if lengths[head] == dates[head] else lengths[head]}
-                     for head, label in WIDGET_FIELDS]}
+    return {"version": 3, "title": f"Citizenship {cohort}", "period": last,
+            "rows": [widget_row(label, cells[head]) for head, label in WIDGET_FIELDS]}
+
+
+def widget_row(label: str, odds: Odds) -> dict:
+    """One widget column: the chance, and "by" the month it's at."""
+    if not odds.chance:
+        return {"label": label, "value": short_month(odds.when), "detail": ""}
+    return {"label": label, "value": odds.chance,
+            "detail": f"by {short_month(odds.when)}"}
 
 
 def short_month(text: str) -> str:
@@ -2015,9 +2031,9 @@ def short_month(text: str) -> str:
 
 
 def widget_cells(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
-                 last: str, cohort: str, start: str | None) -> dict | None:
-    """`cohort`'s summary row by SPLIT_HEADS, with dates_from(`start`); None if absent."""
-    with dates_from(start):
+                 last: str, cohort: str) -> dict[str, Odds] | None:
+    """`cohort`'s summary Odds by SPLIT_HEADS, as months from `last`; None if absent."""
+    with dates_from(last):
         rows = fifo_summary_rows(cohorts, names, last,
                                  model_rates(cohorts, names, last))
     row = next((r for r in rows if r.cohort == cohort), None)

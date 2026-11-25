@@ -1611,24 +1611,18 @@ class FifoSummary(unittest.TestCase):
 WHEN EACH COHORT IS PROCESSED
 ============================================================
 For each cohort from 2025-05, in 2026-10:
-- Ahead: people ahead of the cohort. To sweep: how many of them the sweep
-  still has to clear before it reaches the cohort. Waiting: the cohort's own
-  applicants still waiting.
-- Leftover: the share of those waiting that the sweep will leave behind,
-  roughly your chance of being one of them. Shown for the cohort the sweep is
-  in and those it has passed; behind the sweep it's 50% by assumption.
-- % fifo: how close to oldest-first clearing has been for the cohort over the
-  last 3 months, against the settled cohorts newer than it. 0% is random
-  order, 100% means every file cleared (other than its own) was ahead of it,
-  below 0% the newer files went first. The newest cohorts have few files to
-  compare, so theirs is mostly rounding.
-- Arrives: months until the sweep reaches the cohort ('now' if it's working
-  through it, 'passed' if it has finished with it).
-- Sweep ends: months until the sweep finishes with the cohort. Done by then:
-  your chance of having been processed by that point, by the trickle or the
-  sweep.
-- If left, half by: if you haven't been processed by then, you're a leftover,
-  and this is the months until half of the leftovers have been processed.
+- Ahead: people ahead of the cohort. To sweep: those the sweep still has to
+  clear before it gets to the cohort. Waiting: the cohort's own applicants
+  still waiting.
+- Leftover: the share of those waiting that the sweep will leave behind. Blank
+  for cohorts it hasn't reached, where it's 50% by assumption.
+- % fifo: how close to oldest-first processing has been over the last 3
+  months. 0% is random order, 100% strictly oldest first. For the newest
+  cohorts it's mostly rounding.
+- Estimates: your chance of having been processed by when the sweep arrives
+  ('now' if it's in the cohort, 'passed' if it's done with it), by when it
+  ends (after that you're a leftover), and by when half the leftovers have
+  been processed.
 - All times are how long from 2026-10, in years and months, at the rates over
   the last 3 months.
 
@@ -1662,10 +1656,10 @@ How the model works:
   2025-07  9,300     1,350    2,200               n/a
 
 Estimates:
-  cohort   arrives  sweep ends  done by then  if left, half by
-  2025-05      now       2y 7m           54%             4y 4m
-  2025-06    2y 3m      4y 10m           70%             6y 7m
-  2025-07    4y 6m       7y 6m           77%             9y 2m
+  cohort      arrives   sweep ends  leftovers half
+  2025-05         now   2y 7m  54%      4y 4m  77%
+  2025-06  2y 3m  22%  4y 10m  70%      6y 7m  85%
+  2025-07  4y 6m  38%   7y 6m  77%      9y 2m  89%
 """ + "=" * WIDE + "\n\n")
 
     def test_matches_the_fifo_report(self):
@@ -1693,28 +1687,25 @@ Estimates:
 
 Estimates:
   2025-05
-             arrives  now
-          sweep ends  2y 7m
-        done by then  54%
-    if left, half by  4y 4m
+           arrives  now
+        sweep ends  2y 7m  54%
+    leftovers half  4y 4m  77%
   2025-06
-             arrives  2y 3m
-          sweep ends  4y 10m
-        done by then  70%
-    if left, half by  6y 7m
+           arrives  2y 3m  22%
+        sweep ends  4y 10m  70%
+    leftovers half  6y 7m  85%
   2025-07
-             arrives  4y 6m
-          sweep ends  7y 6m
-        done by then  77%
-    if left, half by  9y 2m
+           arrives  4y 6m  38%
+        sweep ends  7y 6m  77%
+    leftovers half  9y 2m  89%
 """ + "=" * 46 + "\n\n")
 
     def test_tables_down_to_exactly_their_width(self):
-        counts, estimates = "  cohort   ahead", "  cohort   arrives"
+        counts, estimates = "  cohort   ahead", "  cohort      arrives"
         self.assertIn(counts, run_fifo_summary(FIFO_COHORTS, 53))
         self.assertNotIn(counts, run_fifo_summary(FIFO_COHORTS, 52))
-        self.assertIn(estimates, run_fifo_summary(FIFO_COHORTS, 62))
-        self.assertNotIn(estimates, run_fifo_summary(FIFO_COHORTS, 61))
+        self.assertIn(estimates, run_fifo_summary(FIFO_COHORTS, 50))
+        self.assertNotIn(estimates, run_fifo_summary(FIFO_COHORTS, 49))
 
     def test_fits_and_strips_cleanly_at_every_width(self):
         for width in range(b.MIN_WIDTH, b.MAX_WIDTH + 1):
@@ -1777,20 +1768,43 @@ after its bulge yet.
         self.assertEqual(b.sweep_split(0.0, pos, 100.0, 1.0).half, 5.0)
 
     def test_split_cells(self):
+        O = b.Odds
         pos, gone = b.Position(0, 1000, 500), b.Position(0, 500, 0)
         fast, slow = b.Rates(0.0, 0.1, 100.0), b.Rates(0.0, 0.05, 50.0)
-        self.assertEqual(b.split_cells(fast, pos), ["now", "5m", "50%", "1y"])
-        self.assertEqual(b.split_cells(slow, pos), ["now", "10m", "50%", "2y"])
-        self.assertEqual(b.split_cells(fast, gone), ["passed", "-", "-", "7m"])
-        self.assertEqual(b.split_cells(fast, gone, False)[:3], ["now", "<1m", "0%"])
-        self.assertEqual(b.split_cells(b.Rates(0.0, 0.1, None), pos),
-                         ["-", "-", "-", "-"])
+        self.assertEqual(b.split_cells(fast, pos),
+                         [O("now", ""), O("5m", "50%"), O("1y", "75%")])
+        self.assertEqual(b.split_cells(slow, pos),
+                         [O("now", ""), O("10m", "50%"), O("2y", "75%")])
+        self.assertEqual(b.split_cells(fast, gone),
+                         [O("passed", ""), O("-", ""), O("7m", "50%")])
+        self.assertEqual(b.split_cells(fast, gone, False)[:2],
+                         [O("now", ""), O("<1m", "0%")])
+        self.assertEqual(b.split_cells(b.Rates(0.0, 0.1, None), pos), [O("-", "")] * 3)
         self.assertEqual(b.split_cells(b.Rates(0.0, 0.1, 0.0), b.Position(9, 1, 1)),
-                         ["never", "never", "-", "-"])
+                         [O("never", ""), O("never", ""), O("-", "")])
+        # Leftovers that never clear have no chance to read at "never".
+        self.assertEqual(b.split_cells(b.Rates(0.0, 0.0, 100.0), gone)[2],
+                         O("never", ""))
         behind = b.Position(1400, 1000, 500)
+        arrive = b.arrival_months(fast, behind)
         self.assertEqual(b.split_cells(fast, behind)[0],
-                         b.fmt_duration(b.arrival_months(fast, behind)))
+                         O(b.fmt_duration(arrive),
+                           b.fmt_share(b.sweep_chance(arrive, 0.0, behind, 100.0, 0.1))))
         self.assertEqual(b.fmt_share(0.614), "61%")
+
+    def test_chances_rise_along_the_row(self):
+        # Each time is later than the last, so the chance by it never falls.
+        names = b.settled_cohorts(FIFO_COHORTS)
+        last = b.latest_period(FIFO_COHORTS)
+        for row in b.fifo_summary_rows(FIFO_COHORTS, names, last,
+                                       b.model_rates(FIFO_COHORTS, names, last)):
+            shown = [int(o.chance[:-1]) for o in row.split if o.chance]
+            self.assertEqual(shown, sorted(shown), row.cohort)
+
+    def test_odds_text(self):
+        self.assertEqual(b.odds_text(b.Odds("2028-04", "22%")), "2028-04  22%")
+        self.assertEqual(b.odds_text(b.Odds("2028-04", "5%")), "2028-04   5%")
+        self.assertEqual(b.odds_text(b.Odds("now", "")), "now")
 
     def test_arrival_months(self):
         inf = float("inf")
@@ -1833,7 +1847,7 @@ after its bulge yet.
         rows = b.fifo_summary_rows(FLAT_COHORTS, names, "2026-10",
                                    b.model_rates(FLAT_COHORTS, names, "2026-10"))
         self.assertEqual([r.fifo for r in rows], ["n/a"] * 3)
-        self.assertEqual(rows[1].split, ("never", "never", "-", "-"))
+        self.assertEqual([o.when for o in rows[1].split], ["never", "never", "-"])
         # Leftover shows only where the sweep is in or past the cohort.
         self.assertEqual([r.leftover for r in rows], ["50%", "", ""])
 
@@ -1843,30 +1857,30 @@ class Widget(unittest.TestCase):
         names = b.settled_cohorts(FIFO_COHORTS)
         last = b.latest_period(FIFO_COHORTS)
         target = names[1]
-        def cells(start):
-            with b.dates_from(start):
-                row = next(r for r in b.fifo_summary_rows(
-                    FIFO_COHORTS, names, last,
-                    b.model_rates(FIFO_COHORTS, names, last))
-                    if r.cohort == target)
-            return dict(zip(b.SPLIT_HEADS, row.split))
-        dates, lengths = cells(last), cells(None)
-        heads = ("arrives", "sweep ends", "done by then", "if left, half by")
+        with b.dates_from(last):
+            row = next(r for r in b.fifo_summary_rows(
+                FIFO_COHORTS, names, last,
+                b.model_rates(FIFO_COHORTS, names, last))
+                if r.cohort == target)
         feed = b.widget_feed(FIFO_COHORTS, target)
+        self.assertEqual(feed["version"], 3)
         self.assertEqual(feed["title"], f"Citizenship {target}")
         self.assertEqual(feed["period"], last)
         self.assertEqual([r["label"] for r in feed["rows"]],
-                         ["Sweep arrives", "Sweep done", "Done by then",
-                          "If left, half by"])
-        self.assertEqual([b.short_month(dates[h]) for h in heads],
+                         ["Sweep arrives", "Sweep done", "Leftovers half"])
+        self.assertEqual([o.chance for o in row.split],
                          [r["value"] for r in feed["rows"]])
-        self.assertEqual([lengths[h] if lengths[h] != dates[h] else "" for h in heads],
+        self.assertEqual([f"by {b.short_month(o.when)}" for o in row.split],
                          [r["detail"] for r in feed["rows"]])
-        self.assertEqual(feed["rows"][2]["detail"], "")   # a share has no length
-        self.assertRegex(feed["rows"][1]["value"], r"^\d{1,2}'\d{2}$")
-        self.assertRegex(feed["rows"][1]["detail"], r"^\d+[ym]")
+        self.assertRegex(feed["rows"][1]["detail"], r"^by \d{1,2}'\d{2}$")
         self.assertEqual(set(feed["rows"][0]), {"label", "value", "detail"})
         self.assertIsNone(b.DATES_FROM)
+
+    def test_widget_row(self):
+        self.assertEqual(b.widget_row("Sweep done", b.Odds("2028-09", "64%")),
+                         {"label": "Sweep done", "value": "64%", "detail": "by 9'28"})
+        self.assertEqual(b.widget_row("Sweep arrives", b.Odds("now", "")),
+                         {"label": "Sweep arrives", "value": "now", "detail": ""})
 
     def test_short_month(self):
         for text, want in (("2028-01", "1'28"), ("2030-12", "12'30"),
