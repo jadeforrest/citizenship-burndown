@@ -98,9 +98,10 @@ h1 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; margin: 0
         const tail = h.chance !== null ? h.chance + "%" : h.when;
         if (end < max) ctx.fillText(tail, x.getPixelForValue(end) + 5, yy);
         if (a.when === "now" || a.when === "passed") ctx.fillText(a.when, x.getPixelForValue(0) + 4, yy);
-        if (e.chance !== null && r.ends - r.arrive >= 4) {
+        const inBar = e.chance + "%", barPx = x.getPixelForValue(r.ends) - x.getPixelForValue(r.arrive);
+        if (e.chance !== null && barPx >= ctx.measureText(inBar).width + 8) {
           ctx.fillStyle = "#fff"; ctx.textAlign = "right";
-          ctx.fillText(e.chance + "%", x.getPixelForValue(r.ends) - 4, yy);
+          ctx.fillText(inBar, x.getPixelForValue(r.ends) - 4, yy);
         }
       });
       ctx.restore();
@@ -114,7 +115,7 @@ h1 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; margin: 0
       type: "bar", data: { labels, datasets: ds }, plugins: [tags],
       options: {
         indexAxis: "y", responsive: true, maintainAspectRatio: false, animation: false,
-        layout: { padding: { right: 30 } },
+        layout: { padding: { left: 4, right: 30 } },
         datasets: { bar: { barThickness: 20, borderRadius: 3, grouped: false } },
         scales: {
           x: { min: 0, max, grid: { color: rule }, border: { color: rule },
@@ -147,7 +148,11 @@ h1 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; margin: 0
         return;
       }
       if (typeof Chart === "undefined") throw new Error("chart library didn't load");
-      draw(feed);
+      // Lay the chart out with Inter loaded: measured in the fallback font,
+      // the cohort labels come out wider than their column and clip on the left.
+      const fonts = document.fonts ? document.fonts.load("600 12px Inter").catch(() => {}) : null;
+      Promise.race([Promise.resolve(fonts), new Promise(r => setTimeout(r, 2000))])
+        .then(() => draw(feed));
     })
     .catch(() => { sub.textContent = "The estimates couldn't be loaded. Try reloading the page."; });
 })();
