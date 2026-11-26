@@ -351,7 +351,12 @@ so they never write to iCloud. How to change and deploy the widget:
 `python3 burndown.py --json` prints the `--short` table as data
 (`estimates_feed`: each settled cohort's `SPLIT_HEADS` cells as `when` and
 `chance`, plus `period`, the highlighted `cohort`, and `updated`, IRCC's own
-last-updated date from the history via `feed_updated`). It has no timestamp of
+last-updated date from the history via `feed_updated`), and (version 2)
+`model` (`model_feed`): the trickle and leftover rates, the leftovers'
+half-life, their windows, the sweep's share, the highlighted cohort's recent
+order score and the first period, which the page's notes quote in place of
+hand-written figures (`.live` spans, dotted-underlined, filled by `data-k`;
+the HTML holds the last values as a fallback). It has no timestamp of
 its own, so the output only changes when the figures do.
 [artifact/index.html](artifact/index.html) draws it as a per-cohort timeline
 (waiting, the sweep, the leftovers to their half mark), x-axis gridlines at

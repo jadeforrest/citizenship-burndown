@@ -29,7 +29,13 @@ h1 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; margin: 0
 .sw { width: 12px; height: 12px; border-radius: 2px; box-sizing: border-box; }
 .chart { position: relative; height: 620px; }
 .notes { color: var(--muted); font-size: 13.5px; max-width: 65ch; margin-top: 18px; display: grid; gap: 8px; }
-.notes p { margin: 0; }
+.notes p, .notes ul { margin: 0; }
+.notes ul { padding-left: 1.2em; display: grid; gap: 4px; }
+.notes b { color: var(--fg); font-weight: 600; }
+/* Figures filled from data.json's model block: they change with each IRCC update. */
+.live { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap;
+  text-decoration: underline dotted var(--sweep); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+.key { font-size: 12px; }
 .empty { color: var(--muted); padding: 40px 0; }
 </style>
 <main>
@@ -43,9 +49,16 @@ h1 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; margin: 0
   </div>
   <div class="chart"><canvas id="chart" role="img" aria-label="Timeline per cohort of when the oldest-first sweep arrives, when it ends, and when half of the leftovers are processed.">Estimates per cohort.</canvas></div>
   <div class="notes">
-    <p>Each row is a month of applications for proof of citizenship. IRCC mostly processes them oldest first: a sweep moves through one cohort at a time, while a slow trickle processes some files out of order.</p>
-    <p>The sweep takes about half of whoever is still waiting when it reaches a cohort. The rest are leftovers, which keep clearing at a few percent a month.</p>
-    <p>Estimates use the rates over the last 3 months of IRCC's published counts, which are rounded to the nearest 100. They update when IRCC refreshes its feed.</p>
+    <p>These estimates come from IRCC's published queue numbers for proof of citizenship, broken down by application month (cohort), going back to <span class="live" data-k="since">Nov 2025</span>. For each cohort you can see how many people who applied that month are still waiting. Across cohorts, you can also see where the processing is happening.</p>
+    <p>A long-standing question is whether processing is random or first in, first out. Comparing cohorts month by month gives a mix of both. Over the last <span class="live" data-k="window_months">3 months</span> the score is <span class="live" data-k="fifo_score">0.40</span>, where 0 is random and 1 is strictly oldest first. The model splits processing into three phases:</p>
+    <ul>
+      <li><b>Trickle:</b> files processed out of order, at about <span class="live" data-k="trickle">1.4%</span> of each cohort's waiting applicants a month. It applies to every cohort, before and after the sweep.</li>
+      <li><b>Sweep:</b> the oldest-first push, which works through one cohort at a time. When it reaches yours, it processes about <span class="live" data-k="sweep_share">50%</span> of whoever is still waiting, in a few months.</li>
+      <li><b>Leftovers:</b> the rest, whom the sweep passes over. They keep clearing faster than the trickle but far slower than the sweep, at about <span class="live" data-k="leftover">3.6%</span> a month over the last <span class="live" data-k="leftover_months">5 months</span>. At that rate, half of them are done in <span class="live" data-k="leftover_half">about 19 months</span>.</li>
+    </ul>
+    <p>Each row shows when your cohort is in each phase: when the sweep arrives, when it finishes, and when half the leftovers have been processed. The percentage at each point is the chance you've been processed by then.</p>
+    <p>Only cohorts whose counts have settled are shown. A new cohort's count swings up and back down for its first few months. IRCC's counts are rounded to the nearest 100. The estimates update when IRCC refreshes its feed.</p>
+    <p class="key"><span class="live">Underlined figures</span> are recalculated each time IRCC publishes new numbers<span id="asof"></span>.</p>
   </div>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -140,9 +153,28 @@ h1 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; margin: 0
       + hi + " is highlighted. Gridlines mark the start of each year.";
   }
 
+  // The notes' figures from feed.model; the HTML holds the last published
+  // values, so the notes still read correctly if a field is missing.
+  function fillNotes(feed) {
+    const m = feed.model || {};
+    const months = n => n + (n === 1 ? " month" : " months");
+    const half = n => n < 24 ? "about " + months(n) : "about " + (n / 12).toFixed(1) + " years";
+    const fmt = {
+      since: nice, window_months: months, leftover_months: months, leftover_half: half,
+      fifo_score: v => v.toFixed(2), trickle: v => v.toFixed(1) + "%",
+      leftover: v => v.toFixed(1) + "%", sweep_share: v => v + "%"
+    };
+    document.querySelectorAll(".live[data-k]").forEach(el => {
+      const v = m[el.dataset.k];
+      if (v !== null && v !== undefined) el.textContent = fmt[el.dataset.k](v);
+    });
+    if (feed.period) document.getElementById("asof").textContent = "; these are from the " + nice(feed.period) + " figures";
+  }
+
   fetch("data.json", { cache: "no-store" })
     .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(feed => {
+      fillNotes(feed);
       if (!feed.rows || !feed.rows.length) {
         sub.textContent = "No cohort has settled figures yet, so there are no estimates to show.";
         return;

@@ -1123,9 +1123,14 @@ def model_rates(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
                  sweep_pace(cohorts, names, end, background), months)
 
 
-def half_life(rate: float) -> str:
+def half_life_months(rate: float) -> float:
     """Months until half of a group clearing at `rate` (> 0) a month is left."""
-    return f"{math.log(0.5) / math.log1p(-min(rate, 0.999)):.0f} months"
+    return math.log(0.5) / math.log1p(-min(rate, 0.999))
+
+
+def half_life(rate: float) -> str:
+    """half_life_months() as text: "19 months"."""
+    return f"{half_life_months(rate):.0f} months"
 
 
 def bullets(items: list[str], width: int) -> str:
@@ -1513,12 +1518,37 @@ def estimates_feed(cohorts: dict[str, list[tuple[str, float]]],
     names = settled_cohorts(cohorts)
     last = latest_period(cohorts) if cohorts else None
     rows = dated_rows(cohorts, names, last) if names else []
-    return {"version": 1, "period": last, "updated": updated, "cohort": cohort,
+    return {"version": 2, "period": last, "updated": updated, "cohort": cohort,
+            "model": model_feed(cohorts, names, last, cohort) if names else None,
             "heads": list(SPLIT_HEADS),
             "rows": [{"cohort": r.cohort,
                       "cells": [{"when": o.when,
                                  "chance": int(o.chance[:-1]) if o.chance else None}
                                 for o in r.split]} for r in rows]}
+
+
+def model_feed(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+               last: str, cohort: str) -> dict:
+    """
+    The figures the timeline page's notes quote, so they stay current: the
+    trickle and leftover rates (percent a month, model_rates() at `last`),
+    the leftovers' half-life in months, the windows they're over, the sweep's
+    share, `cohort`'s OrderScore over RECENT_MONTHS (None without one) and
+    the first period in the history.
+    """
+    rates = model_rates(cohorts, names, last)
+    score = order_score(cohorts, cohort, [c for c in names if c > cohort],
+                        last, RECENT_MONTHS)
+    fifo = score and score.score()
+    return {"trickle": round(rates.background * 100, 1),
+            "leftover": round(rates.leftover * 100, 1),
+            "leftover_half": (round(half_life_months(rates.leftover))
+                              if rates.leftover > 0 else None),
+            "leftover_months": rates.leftover_months or RECENT_MONTHS,
+            "window_months": RECENT_MONTHS,
+            "sweep_share": round((1 - STRAGGLERS) * 100),
+            "fifo_score": None if fifo is None else round(fifo, 2),
+            "since": min(p for series in cohorts.values() for p, _ in series)}
 
 
 def write_widget(history: Path = HISTORY_PATH, path: Path | None = None,

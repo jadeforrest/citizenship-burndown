@@ -1290,7 +1290,10 @@ class EstimatesFeed(unittest.TestCase):
     def test_feed_is_the_short_table_as_data(self):
         feed = b.estimates_feed(FIFO_COHORTS, "2025-06")
         self.assertEqual(feed, {
-            "version": 1, "period": "2026-10", "updated": None, "cohort": "2025-06",
+            "version": 2, "period": "2026-10", "updated": None, "cohort": "2025-06",
+            "model": {"trickle": 0.9, "leftover": 3.3, "leftover_half": 21,
+                      "leftover_months": 4, "window_months": 3, "sweep_share": 50,
+                      "fifo_score": 1.0, "since": "2026-01"},
             "heads": ["arrives", "sweep ends", "leftovers half"],
             "rows": [
                 {"cohort": "2025-05", "cells": [
@@ -1322,6 +1325,28 @@ class EstimatesFeed(unittest.TestCase):
                               for c in r["cells"]])
                for r in b.estimates_feed(FIFO_COHORTS)["rows"]]
         self.assertEqual(got, want)
+
+    def test_model_figures_match_the_report(self):
+        # The page quotes these, so they must be the report's own figures.
+        names = b.settled_cohorts(FIFO_COHORTS)
+        rates = b.model_rates(FIFO_COHORTS, names, "2026-10")
+        model = b.estimates_feed(FIFO_COHORTS, "2025-06")["model"]
+        self.assertEqual(f"{model['trickle']:.1f}%", b.fmt_pct(rates.background))
+        self.assertEqual(f"{model['leftover']:.1f}%", b.fmt_pct(rates.leftover))
+        self.assertEqual(f"{model['leftover_half']} months", b.half_life(rates.leftover))
+        score = b.order_score(FIFO_COHORTS, "2025-06", ["2025-07"], "2026-10", 3)
+        self.assertEqual(b.fifo_percent(model["fifo_score"]),
+                         b.fifo_percent(score.score()))
+
+    def test_model_with_nothing_clearing_or_no_score(self):
+        names = b.settled_cohorts(FIFO_COHORTS)
+        with unittest.mock.patch.object(b, "model_rates",
+                                        return_value=b.Rates(0.0, 0.0, None)):
+            model = b.model_feed(FIFO_COHORTS, names, "2026-10", "2025-07")
+        self.assertIsNone(model["leftover_half"])
+        self.assertEqual(model["leftover_months"], b.RECENT_MONTHS)
+        self.assertIsNone(model["fifo_score"])   # nothing newer to compare
+        self.assertIsNone(b.estimates_feed({})["model"])
 
     def test_feed_without_history_or_settled_cohorts(self):
         self.assertEqual(b.estimates_feed({})["period"], None)
