@@ -12,7 +12,7 @@ processed by then. COHORT (default 2025-07) is then shown in detail: its
 50/75/90% times with and without the sweep, and how close to oldest-first
 the processing has been. Times are the month (YYYY-MM) they come to;
 --durations shows how long from the latest period instead (1y 5m), and
---short prints only the estimates table. The report fits itself to the
+--short prints only the estimates table (--json: as data). The report fits itself to the
 terminal; set BURNDOWN_WIDTH to override the detected width.
 """
 
@@ -1472,14 +1472,53 @@ def short_month(text: str) -> str:
     return f"{int(month)}'{year[2:]}"
 
 
+def dated_rows(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
+               last: str) -> list[FifoSummaryRow]:
+    """fifo_summary_rows() at `last`'s rates, its times as the months they come to."""
+    with dates_from(last):
+        return fifo_summary_rows(cohorts, names, last,
+                                 model_rates(cohorts, names, last))
+
+
 def widget_cells(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
                  last: str, cohort: str) -> dict[str, Odds] | None:
     """`cohort`'s summary Odds by SPLIT_HEADS, as months from `last`; None if absent."""
-    with dates_from(last):
-        rows = fifo_summary_rows(cohorts, names, last,
-                                 model_rates(cohorts, names, last))
-    row = next((r for r in rows if r.cohort == cohort), None)
+    row = next((r for r in dated_rows(cohorts, names, last) if r.cohort == cohort), None)
     return None if row is None else dict(zip(SPLIT_HEADS, row.split))
+
+
+def feed_updated(path: Path) -> str | None:
+    """The last flpt_lastupdated in the history (IRCC's own date, as it
+    writes it: "November 17, 2026"); None without one or without the file."""
+    try:
+        with path.open(newline="") as f:
+            dates = [d for row in csv.DictReader(f)
+                     if (d := (row.get("flpt_lastupdated") or "").strip())]
+    except FileNotFoundError:
+        return None
+    return dates[-1] if dates else None
+
+
+def estimates_feed(cohorts: dict[str, list[tuple[str, float]]],
+                   cohort: str = DEFAULT_COHORT,
+                   updated: str | None = None) -> dict:
+    """
+    --json: the --short table as data, for the shared timeline page
+    (artifact/index.html). Each settled cohort's SPLIT_HEADS cells, each a
+    `when` (a YYYY-MM month, or a word: now, passed, -, never) and the
+    `chance` of having been processed by then in whole percent (None where
+    the time is a word). `cohort` is the one the page highlights, and
+    `updated` when IRCC last updated the figures (feed_updated()).
+    """
+    names = settled_cohorts(cohorts)
+    last = latest_period(cohorts) if cohorts else None
+    rows = dated_rows(cohorts, names, last) if names else []
+    return {"version": 1, "period": last, "updated": updated, "cohort": cohort,
+            "heads": list(SPLIT_HEADS),
+            "rows": [{"cohort": r.cohort,
+                      "cells": [{"when": o.when,
+                                 "chance": int(o.chance[:-1]) if o.chance else None}
+                                for o in r.split]} for r in rows]}
 
 
 def write_widget(history: Path = HISTORY_PATH, path: Path | None = None,
@@ -1527,6 +1566,9 @@ def parse_args(argv) -> argparse.Namespace:
         "--short", action="store_true",
         help="only the estimates table")
     parser.add_argument(
+        "--json", action="store_true",
+        help="the estimates table as JSON, for the shared timeline page")
+    parser.add_argument(
         "--durations", action="store_true",
         help="show each time as how long from the latest period (1y 5m) "
              "rather than the month (YYYY-MM) it comes to")
@@ -1534,13 +1576,18 @@ def parse_args(argv) -> argparse.Namespace:
 
 
 def main(argv=()) -> None:
-    """The report (--short: its estimates table) for the history's cohorts."""
+    """The report (--short: its estimates table; --json: that as data)."""
     global COLOR
     args = parse_args(argv)
     COLOR = color_enabled()
     width = output_width()
     rejected: list[int] = []
     cohorts = load_cohorts(HISTORY_PATH, rejected)
+    if args.json:
+        json.dump(estimates_feed(cohorts, args.cohort, feed_updated(HISTORY_PATH)),
+                  sys.stdout, indent=1)
+        print()
+        return
     warn_rejected(rejected, width)
     with dates_from(None if args.durations or not cohorts else latest_period(cohorts)):
         (print_short if args.short else print_fifo)(cohorts, width, args.cohort)

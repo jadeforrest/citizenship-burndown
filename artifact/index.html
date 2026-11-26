@@ -1,0 +1,154 @@
+<title>Citizenship Burndown</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* One column: heading with the as-of period, legend, the cohort timeline, notes. */
+:root {
+  --bg: #fbfbf9; --fg: #17191c; --muted: #6b6e72; --rule: #e3e3de;
+  --wait: #d6d5cf; --sweep: #c8102e; --left: rgba(200, 16, 46, 0.14);
+  --hi-wait: #b3b1a9;
+  --display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --body: "Inter", system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141517; --fg: #ecebe7; --muted: #9a9b9d; --rule: #2b2c2f;
+  --wait: #3a3b3e; --sweep: #ef4a5f; --left: rgba(239, 74, 95, 0.18);
+  --hi-wait: #5c5d60; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #141517; --fg: #ecebe7; --muted: #9a9b9d; --rule: #2b2c2f;
+  --wait: #3a3b3e; --sweep: #ef4a5f; --left: rgba(239, 74, 95, 0.18);
+  --hi-wait: #5c5d60; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+main { max-width: 860px; margin: 0 auto; padding-block: 28px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); margin: 4px 0 20px; font-variant-numeric: tabular-nums; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 12px; height: 12px; border-radius: 2px; box-sizing: border-box; }
+.chart { position: relative; height: 620px; }
+.notes { color: var(--muted); font-size: 13.5px; max-width: 65ch; margin-top: 18px; display: grid; gap: 8px; }
+.notes p { margin: 0; }
+.empty { color: var(--muted); padding: 40px 0; }
+</style>
+<main>
+  <h1>When each cohort is processed</h1>
+  <p class="sub" id="sub">Loading the latest estimates…</p>
+  <div class="legend" aria-hidden="true">
+    <span><span class="sw" style="background:var(--wait)"></span>waiting for the sweep</span>
+    <span><span class="sw" style="background:var(--sweep)"></span>sweep passing through</span>
+    <span><span class="sw" style="background:var(--left);border:1.5px solid var(--sweep)"></span>leftovers, until half are processed</span>
+    <span>% = chance processed by then</span>
+  </div>
+  <div class="chart"><canvas id="chart" role="img" aria-label="Timeline per cohort of when the oldest-first sweep arrives, when it ends, and when half of the leftovers are processed.">Estimates per cohort.</canvas></div>
+  <div class="notes">
+    <p>Each row is a month of applications for proof of citizenship. IRCC mostly processes them oldest first: a sweep moves through one cohort at a time, while a slow trickle processes some files out of order.</p>
+    <p>The sweep takes about half of whoever is still waiting when it reaches a cohort. The rest are leftovers, which keep clearing at a few percent a month.</p>
+    <p>Estimates use the rates over the last 3 months of IRCC's published counts, which are rounded to the nearest 100. They update when IRCC refreshes its feed.</p>
+  </div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+(function () {
+  const sub = document.getElementById("sub");
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const idx = m => /^\d{4}-\d{2}$/.test(m) ? +m.slice(0, 4) * 12 + (+m.slice(5) - 1) : null;
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const nice = m => { const i = idx(m); return i === null ? m : MONTHS[i % 12] + " " + Math.floor(i / 12); };
+
+  function rowsFrom(feed) {
+    const base = idx(feed.period);
+    return feed.rows.map(r => {
+      const [a, e, h] = r.cells;
+      const at = c => { const i = idx(c.when); return i === null ? null : i - base; };
+      const arrive = a.when === "now" || a.when === "passed" ? 0 : at(a);
+      const ends = e.when === "-" && a.when === "passed" ? 0 : at(e);
+      return { cohort: r.cohort, cells: r.cells, arrive, ends, half: at(h) };
+    });
+  }
+
+  function draw(feed) {
+    const rows = rowsFrom(feed), base = idx(feed.period), hi = feed.cohort;
+    const ends = rows.flatMap(r => [r.arrive, r.ends, r.half]).filter(v => v !== null);
+    const max = Math.ceil((Math.max(12, ...ends) + 4) / 6) * 6;
+    const fg = css("--fg"), muted = css("--muted"), rule = css("--rule"), sweep = css("--sweep");
+    const pick = (r, a, b) => r.cohort === hi ? a : b;
+    const fade = c => c + (c.startsWith("#") && c.length === 7 ? "99" : "");
+    const span = (a, b) => a === null || b === null || b <= a ? null : [a, b];
+    const labels = rows.map(r => r.cohort);
+    const ds = [
+      { key: 0, data: rows.map(r => span(0, r.arrive)),
+        backgroundColor: rows.map(r => pick(r, css("--hi-wait"), css("--wait"))) },
+      { key: 1, data: rows.map(r => span(r.arrive, r.ends)),
+        backgroundColor: rows.map(r => pick(r, sweep, fade(sweep))) },
+      { key: 2, data: rows.map(r => span(r.ends ?? r.arrive ?? 0, r.half ?? max)),
+        backgroundColor: css("--left"), borderColor: rows.map(r => pick(r, sweep, fade(sweep))),
+        borderWidth: 1.5, borderSkipped: false }
+    ];
+    const font = "11px Inter, system-ui, sans-serif";
+    const tags = { id: "tags", afterDatasetsDraw(c) {
+      const { ctx, scales: { x, y } } = c;
+      ctx.save(); ctx.font = font; ctx.textBaseline = "middle";
+      rows.forEach((r, i) => {
+        const yy = y.getPixelForValue(i);
+        const [a, e, h] = r.cells;
+        ctx.fillStyle = r.cohort === hi ? fg : muted; ctx.textAlign = "left";
+        const end = r.half ?? max;
+        const tail = h.chance !== null ? h.chance + "%" : h.when;
+        if (end < max) ctx.fillText(tail, x.getPixelForValue(end) + 5, yy);
+        if (a.when === "now" || a.when === "passed") ctx.fillText(a.when, x.getPixelForValue(0) + 4, yy);
+        if (e.chance !== null && r.ends - r.arrive >= 4) {
+          ctx.fillStyle = "#fff"; ctx.textAlign = "right";
+          ctx.fillText(e.chance + "%", x.getPixelForValue(r.ends) - 4, yy);
+        }
+      });
+      ctx.restore();
+    } };
+    const tip = (r, k) => {
+      const c = r.cells[k];
+      const head = ["Sweep arrives", "Sweep ends", "Half the leftovers processed by"][k];
+      return head + " " + nice(c.when) + (c.chance !== null ? " (" + c.chance + "% chance processed by then)" : "");
+    };
+    new Chart(document.getElementById("chart"), {
+      type: "bar", data: { labels, datasets: ds }, plugins: [tags],
+      options: {
+        indexAxis: "y", responsive: true, maintainAspectRatio: false, animation: false,
+        layout: { padding: { right: 30 } },
+        datasets: { bar: { barThickness: 20, borderRadius: 3, grouped: false } },
+        scales: {
+          x: { min: 0, max, grid: { color: rule }, border: { color: rule },
+               afterBuildTicks: s => {
+                 const ticks = [];
+                 for (let v = 12 - base % 12; v <= max; v += 12) ticks.push({ value: v });
+                 s.ticks = ticks;
+               },
+               ticks: { color: muted, autoSkip: true, font: { family: "Inter" },
+                        callback: v => String(Math.floor((base + v) / 12)) } },
+          y: { stacked: true, grid: { display: false }, border: { color: rule },
+               ticks: { color: c => labels[c.index] === hi ? fg : muted,
+                        font: c => ({ family: "Inter", weight: labels[c.index] === hi ? "600" : "400" }) } }
+        },
+        plugins: { legend: { display: false }, tooltip: { callbacks: {
+          title: i => "Cohort " + labels[i[0].dataIndex],
+          label: i => tip(rows[i.dataIndex], i.dataset.key) } } }
+      }
+    });
+    sub.textContent = (feed.updated ? "IRCC last updated its figures " + feed.updated + ". "
+                                    : "Estimates from IRCC's " + nice(feed.period) + " figures. ")
+      + hi + " is highlighted. Gridlines mark the start of each year.";
+  }
+
+  fetch("data.json", { cache: "no-store" })
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(feed => {
+      if (!feed.rows || !feed.rows.length) {
+        sub.textContent = "No cohort has settled figures yet, so there are no estimates to show.";
+        return;
+      }
+      if (typeof Chart === "undefined") throw new Error("chart library didn't load");
+      draw(feed);
+    })
+    .catch(() => { sub.textContent = "The estimates couldn't be loaded. Try reloading the page."; });
+})();
+</script>

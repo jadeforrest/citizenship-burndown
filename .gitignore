@@ -6,3 +6,4 @@ flpt_watch.launchd.log
 .coverage
 .venv/
 coverage.json
+artifact/data.json*

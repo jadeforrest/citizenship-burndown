@@ -1286,6 +1286,72 @@ class Widget(unittest.TestCase):
                 self.assertFalse(b.write_widget(Path(d) / "h.csv", cohort=target))
 
 
+class EstimatesFeed(unittest.TestCase):
+    def test_feed_is_the_short_table_as_data(self):
+        feed = b.estimates_feed(FIFO_COHORTS, "2025-06")
+        self.assertEqual(feed, {
+            "version": 1, "period": "2026-10", "updated": None, "cohort": "2025-06",
+            "heads": ["arrives", "sweep ends", "leftovers half"],
+            "rows": [
+                {"cohort": "2025-05", "cells": [
+                    {"when": "now", "chance": None},
+                    {"when": "2029-05", "chance": 54},
+                    {"when": "2031-02", "chance": 77}]},
+                {"cohort": "2025-06", "cells": [
+                    {"when": "2029-01", "chance": 22},
+                    {"when": "2031-08", "chance": 70},
+                    {"when": "2033-05", "chance": 85}]},
+                {"cohort": "2025-07", "cells": [
+                    {"when": "2031-04", "chance": 38},
+                    {"when": "2034-04", "chance": 77},
+                    {"when": "2035-12", "chance": 89}]}]})
+        self.assertIsNone(b.DATES_FROM)
+
+    def test_cells_read_back_as_the_short_cells(self):
+        # Agreement with the table it stands for: each cell, drawn as
+        # odds_text() draws it, is the --short cell.
+        with b.dates_from(b.latest_period(FIFO_COHORTS)):
+            want = [(r.cohort, [b.odds_text(o) for o in r.split]) for r in
+                    b.fifo_summary_rows(FIFO_COHORTS, b.settled_cohorts(FIFO_COHORTS),
+                                        "2026-10", b.model_rates(
+                                            FIFO_COHORTS, b.settled_cohorts(FIFO_COHORTS),
+                                            "2026-10"))]
+        got = [(r["cohort"], [b.odds_text(b.Odds(c["when"],
+                                                  "" if c["chance"] is None
+                                                  else f"{c['chance']}%"))
+                              for c in r["cells"]])
+               for r in b.estimates_feed(FIFO_COHORTS)["rows"]]
+        self.assertEqual(got, want)
+
+    def test_feed_without_history_or_settled_cohorts(self):
+        self.assertEqual(b.estimates_feed({})["period"], None)
+        self.assertEqual(b.estimates_feed({})["rows"], [])
+        early = {c: s for c, s in FIFO_COHORTS.items() if c < "2025-05"}
+        self.assertEqual(b.estimates_feed(early)["rows"], [])
+
+    def test_main_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            history = MainReport().history(d, "bad,row,x\n")
+            out = run_main(history, ("--json", "2025/6"))
+        self.assertEqual(json.loads(out), b.estimates_feed(FIFO_COHORTS, "2025-06"))
+        self.assertNotIn("Skipped", out)
+
+    def test_feed_updated_is_the_last_date_recorded(self):
+        head = ("period,cohort,people_ahead,wait_months,people_ahead_text,"
+                "wait_time_text,flpt_lastupdated,observed_at\n")
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "h.csv"
+            self.assertIsNone(b.feed_updated(path))
+            path.write_text(head + "2026-01,2025-07,15800,4,,,,seed\n")
+            self.assertIsNone(b.feed_updated(path))
+            path.write_text(head + "2026-10,2025-07,1,,,,\"October 9, 2026\",x\n"
+                            "2026-11,2025-07,1,,,,\"November 17, 2026\",x\n"
+                            "2026-11,2025-08,1,,,, ,x\n")
+            self.assertEqual(b.feed_updated(path), "November 17, 2026")
+            self.assertEqual(json.loads(run_main(path, ("--json",)))["updated"],
+                             "November 17, 2026")
+
+
 class MainReport(unittest.TestCase):
     def history(self, d: str, extra: str = "") -> Path:
         return write_history(d, "".join(f"{p},{c},{n:.0f}\n"

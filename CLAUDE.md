@@ -346,6 +346,26 @@ a Scriptable widget on the iPhone and pick that script. The tests patch `burndow
 so they never write to iCloud. How to change and deploy the widget:
 `~/Developer/ops/docs/iphone-widgets.md`.
 
+### Shared timeline page
+
+`python3 burndown.py --json` prints the `--short` table as data
+(`estimates_feed`: each settled cohort's `SPLIT_HEADS` cells as `when` and
+`chance`, plus `period`, the highlighted `cohort`, and `updated`, IRCC's own
+last-updated date from the history via `feed_updated`). It has no timestamp of
+its own, so the output only changes when the figures do.
+[artifact/index.html](artifact/index.html) draws it as a per-cohort timeline
+(waiting, the sweep, the leftovers to their half mark), x-axis gridlines at
+each January, and is published as a private claude.ai artifact
+(https://claude.ai/artifact/TPdW5KacHCsxiYfxPoGm3N) with the data as its
+`data.json`. [artifact/refresh.sh](artifact/refresh.sh) regenerates
+`data.json.new` and prints `CHANGED` or `UNCHANGED` against the last published
+`data.json` (both gitignored); after publishing, move `.new` over it. Only a
+Claude session with the Artifact tool can publish: headless `claude -p` has
+no Artifact tool (checked 2026-11-25), so `flpt_watch.py` can't do it itself.
+Instead the desktop app's daily `citizenship-artifact` scheduled task
+(9:15, `~/.claude/scheduled-tasks/citizenship-artifact/SKILL.md`) runs
+`refresh.sh` and publishes only on `CHANGED`; it runs while the app is open.
+
 ## Code structure
 
 ### flpt_watch.py
