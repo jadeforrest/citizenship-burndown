@@ -1348,6 +1348,19 @@ class EstimatesFeed(unittest.TestCase):
         self.assertIsNone(model["fifo_score"])   # nothing newer to compare
         self.assertIsNone(b.estimates_feed({})["model"])
 
+    def test_model_rounds_score_and_follows_stragglers(self):
+        names = b.settled_cohorts(FIFO_COHORTS)
+        model = b.model_feed(FIFO_COHORTS, names, "2026-10", "2025-05")
+        self.assertEqual(model["fifo_score"], 0.64)   # 0.6447..., to 2 places
+        with unittest.mock.patch.object(b, "STRAGGLERS", 0.3):
+            model = b.model_feed(FIFO_COHORTS, names, "2026-10", "2025-05")
+        self.assertEqual(model["sweep_share"], 70)    # the share the sweep takes
+
+    def test_half_life_clamps_a_rate_of_one(self):
+        self.assertAlmostEqual(b.half_life_months(1.0),
+                               math.log(0.5) / math.log1p(-0.999))
+        self.assertAlmostEqual(b.half_life_months(0.5), 1.0)
+
     def test_feed_without_history_or_settled_cohorts(self):
         self.assertEqual(b.estimates_feed({})["period"], None)
         self.assertEqual(b.estimates_feed({})["rows"], [])
