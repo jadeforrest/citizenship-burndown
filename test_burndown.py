@@ -182,6 +182,15 @@ class CurrentModel(unittest.TestCase):
         return {c: [(p, n - 500 if c > name and p == "2026-10" else n) for p, n in s]
                 for c, s in FIFO_COHORTS.items()}
 
+    def test_cohorts_before_summary_from_are_never_work(self):
+        # 2024-12 is before SUMMARY_FROM, so it's a straggler already passed:
+        # the work ahead of 2025-02 is only 2025-01's 80%.
+        cohorts = from_own({c: [1000.0] * 6 for c in ("2024-12", "2025-01", "2025-02")},
+                           first="2026-03")
+        self.assertEqual(b.position(cohorts, "2025-02", "2026-08"),
+                         b.Position(800.0, 1000, 800.0))
+        self.assertEqual(b.position(cohorts, "2024-12", "2026-08").work, 0)
+
     def test_being_swept(self):
         def own(start, end):
             return {"2026-07": start, "2026-08": end, "2026-10": end}
