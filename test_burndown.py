@@ -147,16 +147,50 @@ class CurrentModel(unittest.TestCase):
                          b.shrink_rate(2000, 1700, 8))
 
     def test_the_next_cohort_being_swept_leaves_the_trickle_alone(self):
-        # 500 more of 2025-06 cleared by 2026-10 (everyone behind it 500
-        # fewer ahead), as if the sweep had started on it.
-        swept = {c: [(p, n - 500 if c > "2025-06" and p == "2026-10" else n)
-                     for p, n in s] for c, s in FIFO_COHORTS.items()}
+        # 600 of 2025-06's 1,600 cleared from 2026-07 to 2026-10 (everyone
+        # behind it 500 fewer ahead in 2026-10), as if the sweep were in it.
+        swept = self.cleared_by_2026_10("2025-06")
         self.assertEqual(b.own_cohort(swept, "2025-06").waiting["2026-10"], 1000)
+        # The data puts the sweep in it: no work ahead, but 2025-07 has both
+        # 2025-05's and 2025-06's takes ahead of it.
+        self.assertEqual(b.position(swept, "2025-06", "2026-10"),
+                         b.Position(0.0, 1000, 1000 - 0.2 * 1900))   # 20% of its size left
+
+        self.assertGreater(b.position(FIFO_COHORTS, "2025-06", "2026-10").work, 0)
+        self.assertEqual(b.position(swept, "2025-07", "2026-10").work,
+                         b.position(swept, "2025-05", "2026-10").take
+                         + b.position(swept, "2025-06", "2026-10").take)
+        # So it's out of the trickle with the skip or without.
         self.assertEqual(b.trickle_rate(swept, self.NAMES, "2026-10"),
                          b.trickle_rate(FIFO_COHORTS, self.NAMES, "2026-10"))
         with unittest.mock.patch.object(b, "TRICKLE_SKIP", 0):
-            self.assertGreater(b.trickle_rate(swept, self.NAMES, "2026-10"),
-                               b.trickle_rate(FIFO_COHORTS, self.NAMES, "2026-10"))
+            self.assertEqual(b.trickle_rate(swept, self.NAMES, "2026-10"), 0.0)
+            # Without the rule it's counted, and lifts the trickle.
+            with unittest.mock.patch.object(b, "SWEPT_DROP", 1.0):
+                self.assertGreater(b.trickle_rate(swept, self.NAMES, "2026-10"),
+                                   b.trickle_rate(FIFO_COHORTS, self.NAMES, "2026-10"))
+
+    def test_only_the_cohort_next_to_the_sweep_joins_it(self):
+        # 2025-07 falling while 2025-06, between it and the sweep, isn't.
+        swept = self.cleared_by_2026_10("2025-07")
+        self.assertTrue(b.being_swept(b.own_cohort(swept, "2025-07").waiting, "2026-10"))
+        self.assertGreater(b.position(swept, "2025-07", "2026-10").work, 0)
+
+    @staticmethod
+    def cleared_by_2026_10(name: str) -> dict:
+        """FIFO_COHORTS with 500 more of `name` cleared in 2026-10."""
+        return {c: [(p, n - 500 if c > name and p == "2026-10" else n) for p, n in s]
+                for c, s in FIFO_COHORTS.items()}
+
+    def test_being_swept(self):
+        def own(start, end):
+            return {"2026-07": start, "2026-08": end, "2026-10": end}
+        self.assertTrue(b.being_swept(own(1300, 1000), "2026-10"))     # 300, 23%
+        self.assertFalse(b.being_swept(own(1300, 1100), "2026-10"))    # 200
+        self.assertFalse(b.being_swept(own(2000, 1700), "2026-10"))    # 15%
+        self.assertTrue(b.being_swept(own(2000, 1699), "2026-10"))
+        self.assertFalse(b.being_swept(own(1300, 1000), "2026-11"))    # no figures
+        self.assertFalse(b.being_swept({"2026-10": 0}, "2026-10"))
 
 
 class Formatting(unittest.TestCase):

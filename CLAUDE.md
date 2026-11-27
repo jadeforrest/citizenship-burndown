@@ -87,10 +87,12 @@ prints:
   (171 -> 184). It doesn't steady the pace over time: that swung 701 -> 32 ->
   184 a month from 2026-05 to 2026-11 (2025-07's arrival 9 to 89 months at
   20%), which is the front cohorts' own clearance, and at earlier cutoffs the
-  skip raised the trickle (2026-07: 2.0% -> 2.2%). Known inconsistency:
-  `position` still gives the skipped cohort work ahead, so its own row
-  forecasts only the trickle until the sweep arrives even while the sweep is
-  into it (2025-02: "arrives 2m");
+  skip raised the trickle (2026-07: 2.0% -> 2.2%). Until `being_swept`
+  (below) `position` still gave the skipped cohort work ahead, so its row
+  forecast only the trickle while the sweep was into it (2025-02: "arrives
+  2m"); now such a cohort is in the sweep and leaves the trickle anyway,
+  and the skip mostly covers the months before its fall shows (with
+  `being_swept`, 2026-11's pace is 171 without the skip and 184 with);
 - an `OrderScore` per window: of the files cleared, the share that were ahead
   of COHORT versus the settled cohorts *after* it (COHORT itself is in
   neither, so a cohort at the front of the sweep doesn't count against its
@@ -135,6 +137,15 @@ the trickle. (Until 2026-11-20 each cohort
 got its own pace from its own people-ahead drop less trickle × people ahead;
 for the later cohorts that was a small difference of two big numbers, and the
 rows contradicted each other, 40-240 a month.)
+
+The sweep can be in more than one cohort (`being_swept`): one right behind
+the cohort the sweep is in counts as in it too once its own count fell by
+more than `SWEPT_DROP` (15%) and 200 over `RECENT_MONTHS`, far beyond the
+trickle, and so on down the line while each one does. It then has no work
+ahead, and everyone behind it waits for what the sweep has left in each.
+In 2026-11 that put 2025-02 (1,300 -> 1,000) in the sweep with 2025-01,
+the soft edge the slow sweep since early 2026 has shown. Added 2026-11-27;
+it fires at no earlier cutoff, so the backtest can't score it yet.
 
 The sweep works from COHORT's `Position` (`position`): `work`, the files it
 still has to clear ahead of COHORT, then `take` of COHORT's own `waiting`.
@@ -192,7 +203,8 @@ the front cohorts more slowly than a 20% sweep at the recent pace would. So
 it isn't settled whether that sweep leaves 18% too; the measured-share table
 will show as it finishes with 2025-01 to 2025-03. For 2025-07, 20% (with
 `TRICKLE_SKIP`) put the 50/75/90% times at 2y 6m, 2y 9m and 3y 4m, from
-1y 8m, 2y 8m and 4y 10m: the sweep takes more of each cohort ahead, so it
+1y 8m, 2y 8m and 4y 10m (2y 4m, 2y 7m and 3y 3m once `being_swept` put
+2025-02 in the sweep): the sweep takes more of each cohort ahead, so it
 arrives later, but leaves far fewer behind. `sweep_left` and `position`
 take a `share` argument so the backtest can try others.
 

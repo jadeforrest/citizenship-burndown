@@ -491,12 +491,12 @@ def window_totals(series: list[dict[str, float]], last: str,
     return sum(s[first] for s in kept), sum(s[last] for s in kept)
 
 
-# Cohorts just behind the sweep that trickle_rate() leaves out. Known
-# inconsistency: position() still gives the skipped cohort work ahead, so its
-# own row forecasts only the trickle until the sweep arrives, even when (like
-# 2025-02 in late 2026, 1,300 -> 1,000 in two months) the sweep is already
-# into it. The skip only keeps that clearance out of the trickle, so it counts
-# towards the pace.
+# Cohorts just behind the sweep that trickle_rate() leaves out. Once the
+# data shows the sweep in one (being_swept), position() puts it in the sweep
+# and it leaves the trickle anyway; the skip covers the months before its
+# fall is plain. With being_swept the skip changed little in 2026-11 (pace
+# 171 without it, 184 with), and at earlier cutoffs it raised the trickle a
+# little (2026-07: 2.0% -> 2.2%).
 TRICKLE_SKIP = 1
 
 
@@ -777,12 +777,34 @@ def sweep_level(waiting: dict[str, float], ahead: dict[str, float] | None,
     return None if size is None else share * size
 
 
+# A cohort right behind the sweep counts as in it too once its own count has
+# fallen by more than this share (and more than two rounding steps) over the
+# last RECENT_MONTHS: far beyond the trickle (1-2% a month). Then the sweep
+# is in two cohorts at once, as the slow sweep since early 2026 has been: in
+# 2026-11, 2025-02 (1,300 -> 1,000) while 2025-01 still had some to take.
+# Added 2026-11-27; it fires at no earlier cutoff, so the backtest can't
+# score it yet.
+SWEPT_DROP = 0.15
+
+
+def being_swept(waiting: dict[str, float], last: str) -> bool:
+    """Whether a cohort's own count shows the sweep in it by `last`."""
+    first = month_label(month_index(last) - RECENT_MONTHS)
+    if first not in waiting or last not in waiting:
+        return False
+    drop = waiting[first] - waiting[last]
+    return drop > BULGE_RISE and drop > SWEPT_DROP * waiting[first]
+
+
 def position(cohorts: dict[str, list[tuple[str, float]]], target: str,
              last: str, share: float | None = None) -> Position | None:
     """
     `target`'s Position in `last`, None without its own count then. The work
     ahead is sweep_left() of each cohort from SUMMARY_FROM up to `target`,
-    each one `behind` once there's work ahead of it: everyone before
+    each one `behind` once there's work ahead of it, unless it and every
+    cohort between it and the sweep are being_swept(): then the sweep is in
+    it, with no work ahead (though the cohorts behind it still wait for
+    what the sweep has left in each). Everyone before
     SUMMARY_FROM is a straggler the early-2026 sweep passed, and so is
     `target` itself if it's before SUMMARY_FROM.
     """
@@ -793,17 +815,19 @@ def position(cohorts: dict[str, list[tuple[str, float]]], target: str,
     portion = STRAGGLERS if share is None else share
     work, take = 0.0, 0.0
     ahead, level = None, None
+    front = True    # the sweep is in every cohort so far
     for i in range(first, month_index(target) + 1):
         waiting = own if i == month_index(target) else own_cohort(
             cohorts, month_label(i)).waiting
+        front = front and (work == 0 or being_swept(waiting, last))
         level = sweep_level(waiting, ahead, level, last, portion)
-        left = sweep_left(waiting, last, share, work > 0, level)
+        left = sweep_left(waiting, last, share, not front, level)
         if i == month_index(target):
             take = left
         else:
             work += left
         ahead = waiting
-    return Position(work, own[last], take)
+    return Position(0.0 if front else work, own[last], take)
 
 
 def arrival(background: float, pos: Position, pace: float) -> float:
