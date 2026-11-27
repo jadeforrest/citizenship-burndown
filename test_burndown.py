@@ -1293,7 +1293,7 @@ class EstimatesFeed(unittest.TestCase):
             "version": 2, "period": "2026-10", "updated": None, "cohort": "2025-06",
             "model": {"trickle": 0.9, "leftover": 3.3, "leftover_half": 21,
                       "leftover_months": 4, "window_months": 3, "sweep_share": 50,
-                      "fifo_score": 1.0, "since": "2026-01"},
+                      "fifo_score": 0.78, "since": "2026-01"},
             "heads": ["arrives", "sweep ends", "leftovers half"],
             "rows": [
                 {"cohort": "2025-05", "cells": [
@@ -1327,33 +1327,46 @@ class EstimatesFeed(unittest.TestCase):
         self.assertEqual(got, want)
 
     def test_model_figures_match_the_report(self):
-        # The page quotes these, so they must be the report's own figures.
+        # The page quotes these, so they must be the model's own figures.
         names = b.settled_cohorts(FIFO_COHORTS)
         rates = b.model_rates(FIFO_COHORTS, names, "2026-10")
         model = b.estimates_feed(FIFO_COHORTS, "2025-06")["model"]
         self.assertEqual(f"{model['trickle']:.1f}%", b.fmt_pct(rates.background))
         self.assertEqual(f"{model['leftover']:.1f}%", b.fmt_pct(rates.leftover))
         self.assertEqual(f"{model['leftover_half']} months", b.half_life(rates.leftover))
-        score = b.order_score(FIFO_COHORTS, "2025-06", ["2025-07"], "2026-10", 3)
-        self.assertEqual(b.fifo_percent(model["fifo_score"]),
-                         b.fifo_percent(score.score()))
+        self.assertEqual(model["fifo_score"], 0.78)   # 0.775 pooled, to 2 places
+
+    def test_pooled_score_sums_each_cohorts_counts(self):
+        names = b.settled_cohorts(FIFO_COHORTS)
+        scores = [b.order_score(FIFO_COHORTS, c, names[i + 1:], "2026-10", 3)
+                  for i, c in enumerate(names)]
+        scores = [s for s in scores if s]
+        self.assertGreater(len(scores), 1)
+        ahead = sum(s.ahead_cleared for s in scores)
+        total = ahead + sum(s.newer_cleared for s in scores)
+        rnd = (sum(s.ahead_start for s in scores)
+               / sum(s.ahead_start + s.newer_start for s in scores))
+        self.assertAlmostEqual(b.pooled_order_score(FIFO_COHORTS, names, "2026-10", 3),
+                               (ahead / total - rnd) / (1 - rnd))
+        # With one cohort scored, it's that cohort's own score.
+        self.assertEqual(b.pooled_order_score(FIFO_COHORTS, names[-2:], "2026-10", 3),
+                         scores[-1].score())
+        self.assertIsNone(b.pooled_order_score(FIFO_COHORTS, names[-1:], "2026-10", 3))
 
     def test_model_with_nothing_clearing_or_no_score(self):
         names = b.settled_cohorts(FIFO_COHORTS)
         with unittest.mock.patch.object(b, "model_rates",
                                         return_value=b.Rates(0.0, 0.0, None)):
-            model = b.model_feed(FIFO_COHORTS, names, "2026-10", "2025-07")
+            model = b.model_feed(FIFO_COHORTS, names[-1:], "2026-10")
         self.assertIsNone(model["leftover_half"])
         self.assertEqual(model["leftover_months"], b.RECENT_MONTHS)
         self.assertIsNone(model["fifo_score"])   # nothing newer to compare
         self.assertIsNone(b.estimates_feed({})["model"])
 
-    def test_model_rounds_score_and_follows_stragglers(self):
+    def test_model_follows_stragglers(self):
         names = b.settled_cohorts(FIFO_COHORTS)
-        model = b.model_feed(FIFO_COHORTS, names, "2026-10", "2025-05")
-        self.assertEqual(model["fifo_score"], 0.64)   # 0.6447..., to 2 places
         with unittest.mock.patch.object(b, "STRAGGLERS", 0.3):
-            model = b.model_feed(FIFO_COHORTS, names, "2026-10", "2025-05")
+            model = b.model_feed(FIFO_COHORTS, names, "2026-10")
         self.assertEqual(model["sweep_share"], 70)    # the share the sweep takes
 
     def test_half_life_clamps_a_rate_of_one(self):

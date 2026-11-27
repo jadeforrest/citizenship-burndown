@@ -1519,7 +1519,7 @@ def estimates_feed(cohorts: dict[str, list[tuple[str, float]]],
     last = latest_period(cohorts) if cohorts else None
     rows = dated_rows(cohorts, names, last) if names else []
     return {"version": 2, "period": last, "updated": updated, "cohort": cohort,
-            "model": model_feed(cohorts, names, last, cohort) if names else None,
+            "model": model_feed(cohorts, names, last) if names else None,
             "heads": list(SPLIT_HEADS),
             "rows": [{"cohort": r.cohort,
                       "cells": [{"when": o.when,
@@ -1527,19 +1527,32 @@ def estimates_feed(cohorts: dict[str, list[tuple[str, float]]],
                                 for o in r.split]} for r in rows]}
 
 
+def pooled_order_score(cohorts: dict[str, list[tuple[str, float]]],
+                       names: list[str], last: str, months: int) -> float | None:
+    """
+    One order score for the whole queue: every settled cohort's OrderScore
+    over the `months` ending at `last`, its four counts summed (a ratio of
+    sums, so bigger groups weigh more and the rounding mostly averages out),
+    then scored. None if no cohort has a score.
+    """
+    scores = [s for i, name in enumerate(names)
+              if (s := order_score(cohorts, name, names[i + 1:], last, months))]
+    if not scores:
+        return None
+    return OrderScore(months, *(sum(s[f] for s in scores) for f in range(1, 5))).score()
+
+
 def model_feed(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
-               last: str, cohort: str) -> dict:
+               last: str) -> dict:
     """
     The figures the timeline page's notes quote, so they stay current: the
     trickle and leftover rates (percent a month, model_rates() at `last`),
     the leftovers' half-life in months, the windows they're over, the sweep's
-    share, `cohort`'s OrderScore over RECENT_MONTHS (None without one) and
+    share, the pooled_order_score() over RECENT_MONTHS (None without one) and
     the first period in the history.
     """
     rates = model_rates(cohorts, names, last)
-    score = order_score(cohorts, cohort, [c for c in names if c > cohort],
-                        last, RECENT_MONTHS)
-    fifo = score and score.score()
+    fifo = pooled_order_score(cohorts, names, last, RECENT_MONTHS)
     return {"trickle": round(rates.background * 100, 1),
             "leftover": round(rates.leftover * 100, 1),
             "leftover_half": (round(half_life_months(rates.leftover))

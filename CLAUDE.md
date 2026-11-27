@@ -384,8 +384,9 @@ so they never write to iCloud. How to change and deploy the widget:
 `chance`, plus `period`, the highlighted `cohort`, and `updated`, IRCC's own
 last-updated date from the history via `feed_updated`), and (version 2)
 `model` (`model_feed`): the trickle and leftover rates, the leftovers'
-half-life, their windows, the sweep's share, the highlighted cohort's recent
-order score and the first period, which the page's notes quote in place of
+half-life, their windows, the sweep's share, the recent order score pooled
+across every settled cohort (`pooled_order_score`: each cohort's `OrderScore`
+counts summed, then scored) and the first period, which the page's notes quote in place of
 hand-written figures (`.live` spans, dotted-underlined, filled by `data-k`;
 the HTML holds the last values as a fallback). It has no timestamp of
 its own, so the output only changes when the figures do.
