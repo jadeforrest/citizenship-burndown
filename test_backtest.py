@@ -9,10 +9,10 @@ from pathlib import Path
 
 import backtest as bt
 import burndown as b
-from test_burndown import FIFO_COHORTS, write_history
+from test_burndown import FIFO_COHORTS, FixtureModel, write_history
 
 
-class Backtest(unittest.TestCase):
+class Backtest(FixtureModel):
     def test_truncate(self):
         cut = bt.truncate({"2025-07": [("2026-10", 1.0), ("2026-08", 2.0)],
                            "2025-08": [("2026-10", 3.0)]}, "2026-09")

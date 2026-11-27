@@ -75,7 +75,13 @@ prints:
   reached (`Position.work > 0`), a ratio of sums (`window_totals`) so the
   rounding to 100 mostly averages out. It replaced a median of per-cohort
   6-month rates on 2026-11-20: the front cohorts pulled that median up to
-  1.8% when the cohorts behind them were clearing about 1.3-1.6%;
+  1.8% when the cohorts behind them were clearing about 1.3-1.6%. The first
+  `TRICKLE_SKIP` (1) of those behind the sweep are left out too (unless
+  they're all there is), since the sweep may already be into the next in
+  line: whether the model says so turns on `STRAGGLERS`, and when 2025-02
+  (being swept at 8% a month) was counted the trickle went from 1.4% to 1.7%,
+  which, taken off 30,600 people, halved the pace (171 -> 87). Added
+  2026-11-27; at 50% it changed little (pace 171 -> 184);
 - an `OrderScore` per window: of the files cleared, the share that were ahead
   of COHORT versus the settled cohorts *after* it (COHORT itself is in
   neither, so a cohort at the front of the sweep doesn't count against its
@@ -124,7 +130,7 @@ still has to clear ahead of COHORT, then `take` of COHORT's own `waiting`.
 Both come from `sweep_left`. For the cohort the sweep is in now (no work
 ahead of it) that's its current count minus its `sweep_level`, floored at 0,
 so leftovers already passed don't hold it up again. The level is
-`STRAGGLERS` (50%) of its count the period before the cohort ahead was first
+`STRAGGLERS` (20%) of its count the period before the cohort ahead was first
 down to *its* level (`first_down_to`), i.e. of whoever was waiting when the
 sweep got there; the first settled cohort, or one reached at its first
 counted period, uses its size instead. Until 2026-11-20 every in-sweep cohort
@@ -156,20 +162,22 @@ passed, faster still. Those long times are an extrapolation the backtest
 can't check: its horizons are 1-6 months, and in most of its cases the sweep
 never reaches the cohort, so the sweep predicts exactly what the trickle
 alone does.
-`STRAGGLERS` was a hand-picked 30% until [backtest.py](backtest.py) (below)
-put 20-60% within about a point of each other once the pace had settled, with
-50% marginally best (it can't tell 10% from 50% either: the horizons are too
-short). The share actually left, measured since the Wayback backfill
-(`measured_passes`, below), disagrees: the early-2026 sweep left 2024-07 to
-2024-12 at 10-25% each, 18% pooled (14-22%). The 50-55% once quoted for
-2024-12 and 2025-01 predates those months being in the history. Whether the
-slower sweep since (2025-01 still falling, 1,100 -> 500 over 7 months) leaves
-the same isn't known yet; `STRAGGLERS` stays at 50% until it has finished
-with 2025-01 to 2025-03. Lowering it also changes the pace (below 50%, the
-recent pace drops from 171 to 87 a month, why not yet traced), so for
-2025-07 30% moves the 50% time from 1y 8m to 3y 4m, while 65-80% barely
-moves it. `sweep_left` and `position` take a `share` argument so the
-backtest can try others.
+`STRAGGLERS` is 20%, set on 2026-11-27 from the share actually left
+(`measured_passes`, below): the early-2026 sweep left 2024-07 to 2024-12 at
+10-25% each, 18% pooled (14-22%). It was a hand-picked 30%, then 50% from
+2026-11-20, read from 2024-12 and 2025-01 partway through their passes (a
+four-month gap in 2024-12's figures hid where it levelled off) and from a
+backtest that put 20-60% within about a point. That backtest still slightly
+prefers 50% (4.0% against 4.6% from 2026-07; on the cases the sweep reaches,
+9.6% against 16.9%, the 20% sweep too optimistic by 8 points): over 1-4
+months the slower sweep since (2025-01, 1,100 -> 500 over 7 months) clears
+the front cohorts more slowly than a 20% sweep at the recent pace would. So
+it isn't settled whether that sweep leaves 18% too; the measured-share table
+will show as it finishes with 2025-01 to 2025-03. For 2025-07, 20% (with
+`TRICKLE_SKIP`) put the 50/75/90% times at 2y 6m, 2y 9m and 3y 4m, from
+1y 8m, 2y 8m and 4y 10m: the sweep takes more of each cohort ahead, so it
+arrives later, but leaves far fewer behind. `sweep_left` and `position`
+take a `share` argument so the backtest can try others.
 
 The report (`print_fifo`) runs, in order: `print_every_cohort` (the column
 notes, `summary_items`, then two tables, one row per settled cohort, the
@@ -274,12 +282,13 @@ sweep at each of `SHARES` (one shared `Rates` per cutoff, `Case.pace` and
 middle of its place in the queue, fitted on the cutoff's last window and
 simulated forward, so a cohort speeds up as the queue ahead drains), and two
 baselines, `trickle only` and `nothing`. It then scores again only the cases
-where the 50% sweep is in or reaches the cohort within the horizon
+where the `STRAGGLERS` sweep is in or reaches the cohort within the horizon
 (`Case.reached`), since everywhere else the sweep predicts exactly what the
-trickle alone does. From 2026-07 on: 50% sweep 4.0% mean error (3.8% with the
-pre-2026-11-20 pace and leftovers, the same within noise, as the changes are
-mostly beyond the horizons), gradient 4.3% with almost no bias, trickle only
-5.1%; on the 15 reached cases 10.2%, gradient 11.6%, trickle only 19.4%. On
+trickle alone does. Every share shares the cutoff's one `Rates`, computed at
+`STRAGGLERS`. From 2026-07 on (2026-11-27, at 20%): 50% sweep 4.0% mean
+error, gradient 4.3% with almost no bias, 20% sweep 4.6%, trickle only 5.1%;
+on the 11 reached cases 50% 9.6%, gradient 12.6%, 20% 16.9% (+8.2% bias),
+trickle only 22.3%. On
 the full range every sweep model is badly over-optimistic, because the recent
 pace at the early cutoffs still held the fast early-2026 months. The pace,
 not the leftover share, is what moves the error. Re-run it when more months

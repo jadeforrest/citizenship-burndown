@@ -44,7 +44,7 @@ class Case(NamedTuple):
     background: float
     pace: float       # the shared sweep pace at `cut`, never below 0
     leftover: float = 0.0   # how fast the leftovers clear at `cut`
-    reached: bool = False   # the 50% sweep arrives within `horizon`
+    reached: bool = False   # the STRAGGLERS sweep arrives within `horizon`
 
 
 def truncate(cohorts: dict[str, list[tuple[str, float]]], cut: str) -> dict:

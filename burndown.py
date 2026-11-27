@@ -356,12 +356,13 @@ BULGE_MONTHS = 3
 BULGE_RISE = 200
 BULGE_DROP = 0.15
 
-# Share of a cohort an oldest-first sweep leaves behind for later. When the
-# early-2026 sweep moved on, 2024-12 and 2025-01 were at 50-55% of their
-# January counts. backtest.py scores 20-60% within about a point of each other
-# once the pace has settled, with 50% marginally best; re-run it as the
-# history grows.
-STRAGGLERS = 0.5
+# Share of a cohort an oldest-first sweep leaves behind for later. Measured
+# where the sweep has finished with a cohort (backtest.py's measured_passes):
+# the early-2026 sweep left 2024-07 to 2024-12 at 10-25% each, 18% pooled
+# (14-22%). It was 50% until 2026-11-27, read from 2024-12 and 2025-01
+# partway through their passes; backtest.py's 1-4 month horizons can't tell
+# the two apart. Watch the slower sweep since (2025-01 on) in that table.
+STRAGGLERS = 0.2
 
 # A cohort's size, for how much of it the sweep will take, is its largest own
 # still-waiting count from this period on. IRCC moved to the C-3 process in
@@ -486,6 +487,10 @@ def window_totals(series: list[dict[str, float]], last: str,
     return sum(s[first] for s in kept), sum(s[last] for s in kept)
 
 
+# Cohorts just behind the sweep that trickle_rate() leaves out.
+TRICKLE_SKIP = 1
+
+
 def trickle_rate(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
                  last: str, months: int = RECENT_MONTHS) -> float | None:
     """
@@ -494,10 +499,14 @@ def trickle_rate(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
     reached yet (position().work > 0), pooled as a ratio of sums so the
     rounding to 100 in each count mostly averages out. The cohorts at the
     front are left out: they clear at the sweep's speed, not the trickle's.
+    So are the first TRICKLE_SKIP behind them while others are left, since
+    the sweep may be into those already: whether it is turns on STRAGGLERS,
+    and counting 2025-02 (swept at 8% a month in late 2026) lifted the
+    trickle from 1.4% to 1.7%, which halved the pace.
     """
     behind = [settled_waiting(own_cohort(cohorts, name).waiting) for name in names
               if (pos := position(cohorts, name, last)) and pos.work > 0]
-    totals = window_totals(behind, last, months)
+    totals = window_totals(behind[TRICKLE_SKIP:] or behind, last, months)
     return None if totals is None else shrink_rate(*totals, months)
 
 

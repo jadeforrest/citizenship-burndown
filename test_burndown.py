@@ -52,6 +52,57 @@ JULY_OWN = b.own_cohort(JULY_COHORTS, "2025-07")
 JULY_ENTERED = list(reversed(JULY))
 
 
+class FixtureModel(unittest.TestCase):
+    """
+    The model as it was until 2026-11-27, for the exact-figure tests on the
+    small fixtures: half of a cohort left behind (STRAGGLERS 0.5), and the
+    trickle from every cohort behind the sweep (TRICKLE_SKIP 0). Those tests
+    pin layout, wording and arithmetic, not these two settings, which
+    test_current_model checks on its own. (The fixtures have only two cohorts
+    behind the sweep, so skipping one leaves a trickle of 0.)
+    """
+
+    def setUp(self):
+        super().setUp()
+        for name, value in (("STRAGGLERS", 0.5), ("TRICKLE_SKIP", 0)):
+            patcher = unittest.mock.patch.object(b, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+class CurrentModel(unittest.TestCase):
+    """The settings FixtureModel holds back, at their current values."""
+
+    NAMES = ["2025-05", "2025-06", "2025-07"]
+
+    def test_current_model(self):
+        # Measured since the Wayback backfill: 18% (14-22%) left behind.
+        self.assertEqual((b.STRAGGLERS, b.TRICKLE_SKIP), (0.2, 1))
+
+    def test_trickle_skips_the_cohort_next_to_the_sweep(self):
+        # 2025-05 is at the front; 2025-06 is next in line, so only 2025-07
+        # (2,200 in 2026-07 and 2026-10) is the trickle.
+        self.assertEqual(b.trickle_rate(FIFO_COHORTS, self.NAMES, "2026-10"), 0.0)
+        with unittest.mock.patch.object(b, "TRICKLE_SKIP", 0):
+            self.assertAlmostEqual(b.trickle_rate(FIFO_COHORTS, self.NAMES, "2026-10"),
+                                   1 - (3700 / 3800) ** (1 / 3))
+        # With only the one behind it, that one is the trickle.
+        self.assertAlmostEqual(b.trickle_rate(FIFO_COHORTS, self.NAMES[:2], "2026-10"),
+                               1 - (1500 / 1600) ** (1 / 3))
+
+    def test_the_next_cohort_being_swept_leaves_the_trickle_alone(self):
+        # 500 more of 2025-06 cleared by 2026-10 (everyone behind it 500
+        # fewer ahead), as if the sweep had started on it.
+        swept = {c: [(p, n - 500 if c > "2025-06" and p == "2026-10" else n)
+                     for p, n in s] for c, s in FIFO_COHORTS.items()}
+        self.assertEqual(b.own_cohort(swept, "2025-06").waiting["2026-10"], 1000)
+        self.assertEqual(b.trickle_rate(swept, self.NAMES, "2026-10"),
+                         b.trickle_rate(FIFO_COHORTS, self.NAMES, "2026-10"))
+        with unittest.mock.patch.object(b, "TRICKLE_SKIP", 0):
+            self.assertGreater(b.trickle_rate(swept, self.NAMES, "2026-10"),
+                               b.trickle_rate(FIFO_COHORTS, self.NAMES, "2026-10"))
+
+
 class Formatting(unittest.TestCase):
     def test_fmt_pct(self):
         self.assertEqual(b.fmt_pct(0.0294), "2.9%")
@@ -293,7 +344,7 @@ FIFO_COHORTS = dict(sorted({
 FLAT_COHORTS = {c: [(p, s[-1][1]) for p, _ in s] for c, s in FIFO_COHORTS.items()}
 
 
-class Fifo(unittest.TestCase):
+class Fifo(FixtureModel):
     def test_settled_cohorts(self):
         self.assertEqual(b.settled_cohorts(FIFO_COHORTS),
                          ["2025-05", "2025-06", "2025-07"])
@@ -942,7 +993,7 @@ def checked_report(test: unittest.TestCase, cohorts: dict, width: int,
     return out
 
 
-class FifoSummary(unittest.TestCase):
+class FifoSummary(FixtureModel):
     # Exact text, as for the other reports, so wording and alignment changes show.
     def test_report_text(self):
         self.assertEqual(run_fifo(FIFO_COHORTS), """
@@ -1286,7 +1337,7 @@ class Widget(unittest.TestCase):
                 self.assertFalse(b.write_widget(Path(d) / "h.csv", cohort=target))
 
 
-class EstimatesFeed(unittest.TestCase):
+class EstimatesFeed(FixtureModel):
     def test_feed_is_the_short_table_as_data(self):
         feed = b.estimates_feed(FIFO_COHORTS, "2025-06")
         self.assertEqual(feed, {
@@ -1403,7 +1454,7 @@ class EstimatesFeed(unittest.TestCase):
                              "November 17, 2026")
 
 
-class MainReport(unittest.TestCase):
+class MainReport(FixtureModel):
     def history(self, d: str, extra: str = "") -> Path:
         return write_history(d, "".join(f"{p},{c},{n:.0f}\n"
                                         for c, series in FIFO_COHORTS.items()
