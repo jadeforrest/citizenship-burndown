@@ -43,7 +43,8 @@ HISTORY_FIELDS = (
     "people_ahead_text",
     "wait_time_text",
     "flpt_lastupdated",
-    "observed_at",       # when this watcher saw it (UTC); "seed" for SEED_HISTORY rows
+    "observed_at",       # when this watcher saw it (UTC); "seed" for SEED_HISTORY
+                         # rows, "wayback:<timestamp>" for the 2026-11-27 backfill
 )
 COHORT_KEY = re.compile(r"^citizen-proofs-(202\d)/(\d\d)$")
 

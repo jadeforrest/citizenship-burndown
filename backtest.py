@@ -44,7 +44,7 @@ class Case(NamedTuple):
     background: float
     pace: float       # the shared sweep pace at `cut`, never below 0
     leftover: float = 0.0   # how fast the leftovers clear at `cut`
-    reached: bool = False   # the STRAGGLERS sweep arrives within `horizon`
+    reached: bool = False   # the sweep arrives within `horizon` at any of SHARES
 
 
 def truncate(cohorts: dict[str, list[tuple[str, float]]], cut: str) -> dict:
@@ -79,10 +79,14 @@ def cases(cohorts: dict[str, list[tuple[str, float]]], start: str) -> list[Case]
 
 
 def reaches(seen: dict, name: str, cut: str, rates: b.Rates, horizon: int) -> bool:
-    """Whether the STRAGGLERS sweep is in or reaches `name` within `horizon`."""
-    pos = b.position(seen, name, cut)
-    return (pos is not None and pos.take > 0
-            and b.arrival_months(rates, pos) < horizon)
+    """
+    Whether the sweep is in or reaches `name` within `horizon` at any of
+    SHARES, so the cases scored on their own don't depend on STRAGGLERS
+    (at the share alone, changing it from 50% to 20% took them from 15 to 11).
+    """
+    return any((pos := b.position(seen, name, cut, share)) is not None
+               and pos.take > 0 and b.arrival_months(rates, pos) < horizon
+               for share in SHARES)
 
 
 def isotonic_falling(points: list[tuple[float, float, float]]) -> list[tuple[float, float]]:
@@ -257,13 +261,20 @@ class Pass(NamedTuple):
         return max(self.left - e, 0) / (self.before + e), (self.left + e) / (self.before - e)
 
 
+def spans(periods: list[str], months: int) -> bool:
+    """Whether the first and last of `periods` are `months` apart (no gap)."""
+    return b.month_index(periods[-1]) - b.month_index(periods[0]) == months
+
+
 def levelled_off(series: dict[str, float], periods: list[str],
                  before: float) -> str | None:
-    """The first of `periods` that starts FLOOR_MONTHS calm months."""
+    """The first of `periods` that starts FLOOR_MONTHS calm months in a row."""
     calm = max(FLOOR_CALM * before, ROUNDING)
     for i in range(len(periods) - FLOOR_MONTHS):
-        run = [series[p] for p in periods[i:i + FLOOR_MONTHS + 1]]
-        if run[0] - run[-1] <= calm and all(x - y <= calm for x, y in zip(run, run[1:])):
+        window = periods[i:i + FLOOR_MONTHS + 1]
+        run = [series[p] for p in window]
+        if (spans(window, FLOOR_MONTHS) and run[0] - run[-1] <= calm
+                and all(x - y <= calm for x, y in zip(run, run[1:]))):
             return periods[i]
     return None
 
@@ -279,11 +290,14 @@ def sweep_pass(cohort: str, series: dict[str, float]) -> Pass | None:
     The first fall over PASS_MONTHS that's beyond the trickle and rounding,
     from the highest count in the 2 * PASS_MONTHS months up to where it was
     seen (the latest, if tied) so a slow sweep's first months count, to
-    where it levelled off from then on.
+    where it levelled off from then on. Windows with a missing month are
+    skipped. Only the first such fall counts: an early false one (a late
+    bulge, the C-3 break) would hide a later real pass.
     """
     periods = sorted(series)
     for i in range(PASS_MONTHS, len(periods)):
-        if falls(series, periods[i - PASS_MONTHS], periods[i]):
+        if (spans(periods[i - PASS_MONTHS:i + 1], PASS_MONTHS)
+                and falls(series, periods[i - PASS_MONTHS], periods[i])):
             look = periods[max(i - 2 * PASS_MONTHS, 0):i]
             start = max(reversed(look), key=series.__getitem__)
             ended = levelled_off(series, periods[i:], series[start])
@@ -315,7 +329,8 @@ def pass_report(passes: list[Pass], assumed: float) -> str:
     lines = [f"Leftover share, measured (STRAGGLERS assumes {assumed:.0%}):",
              "A cohort's own count before the sweep and where it levelled off. "
              "The range allows",
-             "for the rounding (two standard deviations); '<' while still falling.",
+             "for the rounding only (two standard deviations); '<' while still "
+             "falling.",
              "", f"  {'cohort':<11}{'reached':>8}{'before':>8}{'levelled':>10}"
              f"{'left':>7}{'share':>7}{'range':>10}"]
     done = [p for p in passes if p.ended]

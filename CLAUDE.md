@@ -79,9 +79,18 @@ prints:
   `TRICKLE_SKIP` (1) of those behind the sweep are left out too (unless
   they're all there is), since the sweep may already be into the next in
   line: whether the model says so turns on `STRAGGLERS`, and when 2025-02
-  (being swept at 8% a month) was counted the trickle went from 1.4% to 1.7%,
-  which, taken off 30,600 people, halved the pace (171 -> 87). Added
-  2026-11-27; at 50% it changed little (pace 171 -> 184);
+  (being swept at 8% a month) was counted the trickle went from 1.4% to 1.7%
+  and its clearance left the pace, which halved (171 -> 87). The cohorts the
+  trickle is measured on add nothing to `sweep_pace` (their clearance and
+  their trickle cancel exactly), so which group a front cohort lands in is
+  all the skip changes. Added 2026-11-27; at 50% in 2026-11 it changed little
+  (171 -> 184). It doesn't steady the pace over time: that swung 701 -> 32 ->
+  184 a month from 2026-05 to 2026-11 (2025-07's arrival 9 to 89 months at
+  20%), which is the front cohorts' own clearance, and at earlier cutoffs the
+  skip raised the trickle (2026-07: 2.0% -> 2.2%). Known inconsistency:
+  `position` still gives the skipped cohort work ahead, so its own row
+  forecasts only the trickle until the sweep arrives even while the sweep is
+  into it (2025-02: "arrives 2m");
 - an `OrderScore` per window: of the files cleared, the share that were ahead
   of COHORT versus the settled cohorts *after* it (COHORT itself is in
   neither, so a cohort at the front of the sweep doesn't count against its
@@ -107,8 +116,10 @@ prints:
   whole months until COHORT's chance of being processed reaches each
   `ESTIMATE_ODDS` (50%, 75%, 90%, under `ESTIMATE_HEADS`) — from
   `sweep_chance`: the trickle compounding, an oldest-first sweep, and the
-  leftovers it leaves clearing at the leftover rate. The 50% is about when
-  the sweep finishes with the cohort. `fmt_duration` rounds to whole
+  leftovers it leaves clearing at the leftover rate. Which of them come
+  before the sweep finishes with the cohort turns on `STRAGGLERS`: about the
+  50% at 50%, about 80-90% at 20% (`estimate_items` points to the estimates
+  table's "sweep ends" chance instead of saying). `fmt_duration` rounds to whole
   months, as years and months (`1y 1m`, `<1m` under one): the inputs are too rough for tenths.
 
 There is one sweep, so there is one pace for every cohort (`sweep_pace`):
@@ -143,7 +154,8 @@ its current count because the trickle thins the cohort and its take alike;
 charging the trickle's past losses to the sweep's share (the old rule) pushed
 leftover % to 52-64%. `arrival` thins the work ahead by the trickle too:
 `ln(1 + work·L / pace) / L` with L the trickle's monthly log-rate, rather
-than `work / pace` (2026-02 was 80 months the old way, about 40 now), and
+than `work / pace` (2026-02 was 80 months the old way, about 40 the new, at
+50% in 2026-11), and
 `sweep_chance` takes `take / waiting` of whoever the trickle has left at
 arrival, then the rest (all of a cohort it has passed) clear at `leftover`. Size (`cohort_size`) is the largest own count from `SIZE_FROM`
 (2026-03) or from where the cohort's bulge settled, whichever is later
@@ -154,22 +166,27 @@ December 2025 makes earlier counts jump, and this also keeps 2025-11's
 tail from 5,800 to about 1,500). `months_to_chance` bisects the chance (it
 only rises), `inf` past `ESTIMATE_CAP`.
 
-Once the sweep has passed you, only the leftover rate is left, so the 75% and
-90% times are set by it and the leftover share, not by your place in the
-queue. The pre-2025 leftovers have been clearing at 3.5-5.5% a month, 2-3x
-the trickle (`leftover_prose` gives their half-life), and 2025-01, just
-passed, faster still. Those long times are an extrapolation the backtest
+Once the sweep has passed you, only the leftover rate is left, so any time
+past the sweep's end is set by it and the leftover share, not by your place
+in the queue (at 50% that was the 75% and 90% times; at 20% the sweep's end
+is past the 75% for most cohorts, so mostly the 90%). The pre-2025 leftovers
+have been clearing at 3.5-5.5% a month, 2-3x the trickle (`leftover_prose`
+gives their half-life). Those long times are an extrapolation the backtest
 can't check: its horizons are 1-6 months, and in most of its cases the sweep
 never reaches the cohort, so the sweep predicts exactly what the trickle
 alone does.
 `STRAGGLERS` is 20%, set on 2026-11-27 from the share actually left
 (`measured_passes`, below): the early-2026 sweep left 2024-07 to 2024-12 at
-10-25% each, 18% pooled (14-22%). It was a hand-picked 30%, then 50% from
+10-25% each, 18% pooled. The 14-22% range is the rounding alone, not how
+much the cohorts differ (10-25%), and `before`, the highest of up to six
+noisy counts, leans high. 2024-07 to 2024-09 fell across the C-3 break
+(2025-11 to 2026-02), so part of that may be the move to C-3; 2024-10 to
+2024-12 alone give about 21%. It was a hand-picked 30%, then 50% from
 2026-11-20, read from 2024-12 and 2025-01 partway through their passes (a
 four-month gap in 2024-12's figures hid where it levelled off) and from a
 backtest that put 20-60% within about a point. That backtest still slightly
-prefers 50% (4.0% against 4.6% from 2026-07; on the cases the sweep reaches,
-9.6% against 16.9%, the 20% sweep too optimistic by 8 points): over 1-4
+prefers 50% (4.0% against 4.6% from 2026-07; on the 18 cases the sweep
+reaches, 9.4% against 13.9%, the 20% sweep 2 points too optimistic): over 1-4
 months the slower sweep since (2025-01, 1,100 -> 500 over 7 months) clears
 the front cohorts more slowly than a 20% sweep at the recent pace would. So
 it isn't settled whether that sweep leaves 18% too; the measured-share table
@@ -282,13 +299,15 @@ sweep at each of `SHARES` (one shared `Rates` per cutoff, `Case.pace` and
 middle of its place in the queue, fitted on the cutoff's last window and
 simulated forward, so a cohort speeds up as the queue ahead drains), and two
 baselines, `trickle only` and `nothing`. It then scores again only the cases
-where the `STRAGGLERS` sweep is in or reaches the cohort within the horizon
-(`Case.reached`), since everywhere else the sweep predicts exactly what the
-trickle alone does. Every share shares the cutoff's one `Rates`, computed at
+where the sweep at any of `SHARES` is in or reaches the cohort within the
+horizon (`Case.reached`, `reaches`), since everywhere else the sweep predicts
+exactly what the trickle alone does. It was the `STRAGGLERS` sweep only until
+2026-11-27, which made the set depend on the model under test (15 cases at
+50%, 11 at 20%). Every share shares the cutoff's one `Rates`, computed at
 `STRAGGLERS`. From 2026-07 on (2026-11-27, at 20%): 50% sweep 4.0% mean
 error, gradient 4.3% with almost no bias, 20% sweep 4.6%, trickle only 5.1%;
-on the 11 reached cases 50% 9.6%, gradient 12.6%, 20% 16.9% (+8.2% bias),
-trickle only 22.3%. On
+on the 18 reached cases 50% 9.4% (0.0% bias), 20% 13.9% (+2.1%), trickle
+only 17.2%. On
 the full range every sweep model is badly over-optimistic, because the recent
 pace at the early cutoffs still held the fast early-2026 months. The pace,
 not the leftover share, is what moves the error. Re-run it when more months
@@ -302,11 +321,13 @@ month at a time misses the slow sweep, and 15% caught 2025-03's trickle and
 rounding). `before` is the highest count in the 6 months up to it, so a slow
 sweep's first months count. It has `levelled_off` once `FLOOR_MONTHS` (3) months
 in a row fall by no more than 5% of `before` or 100, monthly and in all,
-searching only from where the fall was seen. Counts are only read from
+searching only from where the fall was seen. Windows with a missing month
+(`spans`) don't count, and only a cohort's first fall does, so an early false
+one would hide a later pass. Counts are only read from
 `SETTLE_MONTHS` (9) after the cohort's month, past any bulge, and cohorts
 under `MIN_BEFORE` (500) are left out. The range is two standard deviations
-of the rounding (each own count is two figures rounded to 100, sd about 41),
-and the finished passes are pooled, which narrows it. A share is final once
+of the rounding only (each own count is two figures rounded to 100, sd about
+41), and the finished passes are pooled, which narrows it. A share is final once
 recorded: rerun at every earlier cutoff, none changed. Watch 2025-01 (still
 falling) and 2025-02/03 as the sweep finishes with them.
 

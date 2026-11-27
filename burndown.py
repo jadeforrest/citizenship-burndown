@@ -359,9 +359,12 @@ BULGE_DROP = 0.15
 # Share of a cohort an oldest-first sweep leaves behind for later. Measured
 # where the sweep has finished with a cohort (backtest.py's measured_passes):
 # the early-2026 sweep left 2024-07 to 2024-12 at 10-25% each, 18% pooled
-# (14-22%). It was 50% until 2026-11-27, read from 2024-12 and 2025-01
-# partway through their passes; backtest.py's 1-4 month horizons can't tell
-# the two apart. Watch the slower sweep since (2025-01 on) in that table.
+# (14-22% for the rounding alone; 2024-07..09 fell across the C-3 break, and
+# 2024-10..12 alone give about 21%). It was 50% until 2026-11-27, read from
+# 2024-12 and 2025-01 partway through their passes. backtest.py's 1-4 month
+# horizons still prefer 50% (4.0% vs 4.6% from 2026-07; where the sweep
+# reaches the cohort, 20% is about 8 points too optimistic): the slower sweep
+# since (2025-01 on) clears the front more slowly. Watch it in that table.
 STRAGGLERS = 0.2
 
 # A cohort's size, for how much of it the sweep will take, is its largest own
@@ -371,8 +374,9 @@ STRAGGLERS = 0.2
 SIZE_FROM = "2026-03"
 
 # The chances --fifo times: months until you're this likely to have been
-# processed, after the months until the sweep arrives. 50% is about when the
-# sweep finishes with your cohort.
+# processed, after the months until the sweep arrives. Which of them come
+# before the sweep finishes with your cohort depends on STRAGGLERS: at 50%
+# that was about the 50%, at 20% it's about 80-90%.
 ESTIMATE_ODDS = (0.50, 0.75, 0.90)
 
 # The leftovers' rate is measured over the longest window of up to this many
@@ -487,7 +491,12 @@ def window_totals(series: list[dict[str, float]], last: str,
     return sum(s[first] for s in kept), sum(s[last] for s in kept)
 
 
-# Cohorts just behind the sweep that trickle_rate() leaves out.
+# Cohorts just behind the sweep that trickle_rate() leaves out. Known
+# inconsistency: position() still gives the skipped cohort work ahead, so its
+# own row forecasts only the trickle until the sweep arrives, even when (like
+# 2025-02 in late 2026, 1,300 -> 1,000 in two months) the sweep is already
+# into it. The skip only keeps that clearance out of the trickle, so it counts
+# towards the pace.
 TRICKLE_SKIP = 1
 
 
@@ -499,14 +508,20 @@ def trickle_rate(cohorts: dict[str, list[tuple[str, float]]], names: list[str],
     reached yet (position().work > 0), pooled as a ratio of sums so the
     rounding to 100 in each count mostly averages out. The cohorts at the
     front are left out: they clear at the sweep's speed, not the trickle's.
-    So are the first TRICKLE_SKIP behind them while others are left, since
-    the sweep may be into those already: whether it is turns on STRAGGLERS,
-    and counting 2025-02 (swept at 8% a month in late 2026) lifted the
-    trickle from 1.4% to 1.7%, which halved the pace.
+    So are the first TRICKLE_SKIP behind them, unless that leaves nothing
+    to measure, since the sweep may be into those already. Whether it is
+    turns on STRAGGLERS: at 20% in 2026-11, 2025-02 (swept at 8% a month)
+    counted as trickle, which put the trickle at 1.7% instead of 1.4% and
+    took its clearance out of sweep_pace (171 -> 87 a month). The cohorts
+    the trickle is measured on add nothing to the pace, by construction, so
+    which group a front cohort lands in is all that moves it; the pace's
+    month-to-month swings (32-184 a month over 2026-08..11) are the front
+    cohorts' own clearance, not the trickle.
     """
     behind = [settled_waiting(own_cohort(cohorts, name).waiting) for name in names
               if (pos := position(cohorts, name, last)) and pos.work > 0]
-    totals = window_totals(behind[TRICKLE_SKIP:] or behind, last, months)
+    totals = (window_totals(behind[TRICKLE_SKIP:], last, months)
+              or window_totals(behind, last, months))
     return None if totals is None else shrink_rate(*totals, months)
 
 
@@ -1152,8 +1167,9 @@ def estimate_items(odds: tuple[float, ...]) -> list[str]:
     shown = [f"{q:.0%}" for q in odds]
     listed = ", ".join(shown[:-1]) + f" and {shown[-1]}" if len(shown) > 1 else shown[0]
     return [f"{listed}: months until your chance of having been processed "
-            "reaches that. The 50% is about when the sweep finishes with your "
-            "cohort."]
+            "reaches that. The estimates table gives your chance by the time "
+            "the sweep finishes with your cohort; any of these times later than "
+            "that is set by the leftover rate, not your place in the queue."]
 
 
 def leftover_prose(background: float, leftover: float, first: str,
@@ -1179,7 +1195,9 @@ def sweep_items(rates: Rates, pace_words: str, first: str) -> list[str]:
     """How the estimate model works, one item per part, for both reports."""
     return [f"A trickle clears {fmt_pct(rates.background)} of every cohort a "
             "month, old or new: the pooled rate over the last "
-            f"{RECENT_MONTHS} months of the cohorts the sweep hasn't reached.",
+            f"{RECENT_MONTHS} months of the cohorts the sweep hasn't reached"
+            + (", less the one next in line, which it may already be into."
+               if TRICKLE_SKIP else "."),
             f"An oldest-first sweep clears {pace_words} on top of the trickle. "
             "It works through one cohort at a time until "
             f"{STRAGGLERS:.0%} of those waiting when it got there are left, "

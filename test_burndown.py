@@ -70,6 +70,28 @@ class FixtureModel(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
 
+def monthly(counts: list[float], first: str = "2025-10") -> dict[str, float]:
+    """`counts` as a series from `first`, one month apart."""
+    start = b.month_index(first)
+    return {b.month_label(start + k): float(n) for k, n in enumerate(counts)}
+
+
+def from_own(own: dict[str, list[float]], first: str = "2025-10",
+             tail: float = 0.0) -> dict:
+    """
+    A history whose cohorts have these own counts: each one's people ahead
+    is `tail` plus the earlier cohorts' own counts summed, plus a cohort
+    after them all.
+    """
+    names = sorted(own) + [b.month_label(b.month_index(max(own)) + 1)]
+    ahead = [tail] * len(next(iter(own.values())))
+    out = {}
+    for name in names:
+        out[name] = sorted(monthly(ahead, first).items(), reverse=True)
+        ahead = [a + n for a, n in zip(ahead, own.get(name, [0.0] * len(ahead)))]
+    return out
+
+
 class CurrentModel(unittest.TestCase):
     """The settings FixtureModel holds back, at their current values."""
 
@@ -89,6 +111,40 @@ class CurrentModel(unittest.TestCase):
         # With only the one behind it, that one is the trickle.
         self.assertAlmostEqual(b.trickle_rate(FIFO_COHORTS, self.NAMES[:2], "2026-10"),
                                1 - (1500 / 1600) ** (1 / 3))
+
+    def test_report_at_the_current_settings(self):
+        # A queue with five cohorts behind the sweep, so the skip leaves a
+        # trickle to measure: 2025-03 being swept, 2025-04..08 thinning by
+        # 100 every other month.
+        own = {"2025-03": [1100, 1100, 1100, 1100, 1100, 900, 700, 500, 400, 300],
+               **{f"2025-0{m}": [3000, 3000, 2900, 2900, 2800, 2800, 2700, 2700,
+                                 2600, 2600] for m in range(4, 9)}}
+        out = run_fifo(from_own(own, first="2026-01", tail=1500), target="2025-06")
+        for line in ("  2025-06  2y 4m  30%   3y 4m  88%     7y 11m  94%",
+                     "  sweep, recent 3 mo      125    2y 4m  2y 8m  3y 1m   4y 7m",
+                     "Trickle, last 3 mo:   1.3% a month",
+                     "  over the last 3 months of the cohorts the sweep hasn't "
+                     "reached, less the one\n  next in line, which it may already be into.",
+                     "  trickle. It works through one cohort at a time until 20% "
+                     "of those waiting",
+                     "  that. The estimates table gives your chance by the time "
+                     "the sweep finishes\n  with your cohort;"):
+            self.assertIn(line, out)
+        # At 20% the sweep's end comes at 80-90%, not about 50%.
+        self.assertNotIn("The 50% is about when", out)
+
+    def test_trickle_falls_back_when_the_rest_have_no_window(self):
+        # 2025-06 and 2025-07 bulge until 2026-04, so an 8-month window
+        # (from 2026-03) has only 2025-05, the cohort it would skip.
+        bulge = [2000, 9000, 4000, 2600, 2600, 2500, 2500, 2500, 2400, 2400, 2400]
+        own = {"2025-04": [1100] * 6 + [900, 700, 500, 400, 300],
+               "2025-05": [2000, 2000, 2000, 2000, 1900, 1900, 1900, 1800, 1800,
+                           1800, 1700],
+               "2025-06": bulge, "2025-07": bulge}
+        cohorts = from_own(own, first="2026-01", tail=1500)
+        names = b.settled_cohorts(cohorts)
+        self.assertEqual(b.trickle_rate(cohorts, names, "2026-11", 8),
+                         b.shrink_rate(2000, 1700, 8))
 
     def test_the_next_cohort_being_swept_leaves_the_trickle_alone(self):
         # 500 more of 2025-06 cleared by 2026-10 (everyone behind it 500
@@ -1031,7 +1087,9 @@ Estimates:
 
 When will 2025-07 be processed?
 - 50%, 75% and 90%: months until your chance of having been processed reaches
-  that. The 50% is about when the sweep finishes with your cohort.
+  that. The estimates table gives your chance by the time the sweep finishes
+  with your cohort; any of these times later than that is set by the leftover
+  rate, not your place in the queue.
 
 Of the 9,300 ahead, 1,350 are still to be swept, then the sweep takes 1,100 of
 its 2,200 (fewer by then, as the trickle thins both). The rows: no sweep is

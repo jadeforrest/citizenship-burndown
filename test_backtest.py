@@ -9,7 +9,7 @@ from pathlib import Path
 
 import backtest as bt
 import burndown as b
-from test_burndown import FIFO_COHORTS, FixtureModel, write_history
+from test_burndown import FIFO_COHORTS, FixtureModel, from_own, monthly, write_history
 
 
 class Backtest(FixtureModel):
@@ -67,11 +67,17 @@ class Backtest(FixtureModel):
 
     def test_reaches(self):
         rates = b.Rates(0.0, 0.0, 300.0)
-        # 2025-05 is the cohort the sweep is in; 2025-06 waits behind its
-        # 1,500 - 900 = 600 (2 months at 300); 2025-08 has no own count.
-        self.assertTrue(bt.reaches(FIFO_COHORTS, "2025-05", "2026-10", rates, 1))
-        self.assertFalse(bt.reaches(FIFO_COHORTS, "2025-06", "2026-10", rates, 2))
-        self.assertTrue(bt.reaches(FIFO_COHORTS, "2025-06", "2026-10", rates, 3))
+        with unittest.mock.patch.object(bt, "SHARES", (0.5,)):
+            # 2025-05 is the cohort the sweep is in; 2025-06 waits behind its
+            # 1,500 - 900 = 600 (2 months at 300); 2025-08 has no own count.
+            self.assertTrue(bt.reaches(FIFO_COHORTS, "2025-05", "2026-10", rates, 1))
+            self.assertFalse(bt.reaches(FIFO_COHORTS, "2025-06", "2026-10", rates, 2))
+            self.assertTrue(bt.reaches(FIFO_COHORTS, "2025-06", "2026-10", rates, 3))
+        # At any of SHARES: leaving 60%, the sweep has less to take ahead of
+        # 2025-06 and gets there within 2 months; STRAGGLERS doesn't matter.
+        self.assertTrue(bt.reaches(FIFO_COHORTS, "2025-06", "2026-10", rates, 2))
+        with unittest.mock.patch.object(b, "STRAGGLERS", 0.2):
+            self.assertTrue(bt.reaches(FIFO_COHORTS, "2025-06", "2026-10", rates, 2))
         self.assertFalse(bt.reaches(FIFO_COHORTS, "2025-08", "2026-10", rates, 6))
         self.assertFalse(bt.reaches(FIFO_COHORTS, "2025-06", "2026-10",
                                     rates._replace(pace=None), 6))
@@ -180,26 +186,6 @@ class Backtest(FixtureModel):
                       out.getvalue())
 
 
-def monthly(counts: list[float], first: str = "2025-10") -> dict[str, float]:
-    """`counts` as a series from `first`, one month apart."""
-    start = b.month_index(first)
-    return {b.month_label(start + k): float(n) for k, n in enumerate(counts)}
-
-
-def from_own(own: dict[str, list[float]], first: str = "2025-10") -> dict:
-    """
-    A history whose cohorts have these own counts: each one's people ahead
-    is the earlier cohorts' own counts summed, plus a cohort after them all.
-    """
-    names = sorted(own) + [b.month_label(b.month_index(max(own)) + 1)]
-    ahead = [0.0] * len(next(iter(own.values())))
-    out = {}
-    for name in names:
-        out[name] = sorted(monthly(ahead, first).items(), reverse=True)
-        ahead = [a + n for a, n in zip(ahead, own.get(name, [0.0] * len(ahead)))]
-    return out
-
-
 class MeasuredShares(unittest.TestCase):
     # 2024-12's own counts from 2025-10, as the backfilled history has them.
     SHARP = [1200, 1100, 1200, 1200, 1100, 1000, 600, 400, 200, 200, 300, 200, 300, 200]
@@ -211,6 +197,7 @@ class MeasuredShares(unittest.TestCase):
         self.assertTrue(bt.falls(s, "2026-02", "2026-03"))    # 201, 50%
         self.assertFalse(bt.falls(s, "2026-04", "2026-05"))   # 50%, but 150
         self.assertFalse(bt.falls(monthly([1000, 750]), "2025-10", "2025-11"))  # 25%
+        self.assertFalse(bt.falls(monthly([400, 200]), "2025-10", "2025-11"))   # 200
 
     def test_levelled_off(self):
         s = monthly([600, 400, 200, 200, 300, 200])
@@ -224,6 +211,12 @@ class MeasuredShares(unittest.TestCase):
         self.assertIsNone(bt.levelled_off(slow, sorted(slow), 5999))
         # Too few months to tell.
         self.assertIsNone(bt.levelled_off(s, sorted(s)[-3:], 1000))
+        # In all only 100, but a month of 200: not calm.
+        bump = monthly([400, 200, 300, 300])
+        self.assertIsNone(bt.levelled_off(bump, sorted(bump), 1000))
+        # Four counts over four months, one missing: not three calm months.
+        gap = {"2025-10": 300, "2025-11": 300, "2026-01": 300, "2026-02": 300}
+        self.assertIsNone(bt.levelled_off(gap, sorted(gap), 1000))
 
     def test_sweep_pass(self):
         found = bt.sweep_pass("2024-12", monthly(self.SHARP))
@@ -248,6 +241,10 @@ class MeasuredShares(unittest.TestCase):
         self.assertIsNone(bt.sweep_pass("x", monthly([1900, 1900, 1800, 1700, 1600,
                                                       1600, 1600, 1500, 1500])))
         self.assertIsNone(bt.sweep_pass("x", monthly([1000, 100])))
+        # A fall over four months because one is missing isn't PASS_MONTHS'.
+        gap = {"2025-10": 1000, "2025-11": 1000, "2025-12": 1000, "2026-02": 700}
+        self.assertIsNone(bt.sweep_pass("x", gap))
+        self.assertIsNotNone(bt.sweep_pass("x", {**gap, "2026-01": 1000}))
 
     def test_measured_passes(self):
         flat = [900.0] * len(self.SHARP)
@@ -265,6 +262,16 @@ class MeasuredShares(unittest.TestCase):
                              ["2024-12", "2025-03"])
         with unittest.mock.patch.object(bt, "MIN_BEFORE", 1200):
             self.assertEqual(len(bt.measured_passes(cohorts)), 1)
+
+    def test_measured_passes_edges(self):
+        # 2025-01 is SETTLE_MONTHS old in 2025-10, its first count, so its
+        # fall is measured from there; 2025-02 is exactly MIN_BEFORE (and, read
+        # from 2025-11, has too few months after its fall to have levelled).
+        cohorts = from_own({"2025-01": [1000, 900, 600, 300, 300, 300, 300],
+                            "2025-02": [500, 500, 500, 200, 200, 200, 200]})
+        self.assertEqual(bt.measured_passes(cohorts),
+                         [bt.Pass("2025-01", "2025-10", 1000, "2026-01", 300),
+                          bt.Pass("2025-02", "2025-12", 500, None, 200)])
 
     def test_pooled_and_bounds(self):
         one = bt.Pass("a", "2026-01", 1000, "2026-05", 200)
@@ -319,7 +326,8 @@ class MeasuredShares(unittest.TestCase):
             "Leftover share, measured (STRAGGLERS assumes 50%):",
             "A cohort's own count before the sweep and where it levelled off. "
             "The range allows",
-            "for the rounding (two standard deviations); '<' while still falling.",
+            "for the rounding only (two standard deviations); '<' while still "
+            "falling.",
             "",
             "  cohort      reached  before  levelled   left  share     range",
             "  2024-11     2025-11     800   2026-04    200    25%   13%-39%",
@@ -333,7 +341,8 @@ class MeasuredShares(unittest.TestCase):
             "(STRAGGLERS assumes 30%):\n"
             "A cohort's own count before the sweep and where it levelled off. "
             "The range allows\n"
-            "for the rounding (two standard deviations); '<' while still falling.\n"
+            "for the rounding only (two standard deviations); '<' while still "
+            "falling.\n"
             "\n  cohort      reached  before  levelled   left  share     range\n"
             "  none yet."))
 
