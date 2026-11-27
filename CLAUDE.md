@@ -313,7 +313,13 @@ date differ from its latest row, so every published month is recorded even
 when the figures are flat. Rows are append-only; the last row for a
 (period, cohort) wins. An empty or missing file is seeded from `SEED_HISTORY`
 (hand-recorded 2025-07 months, `observed_at` = `seed`) on the next run; to
-re-seed, delete the file. Hand edits are fine — keep the header. `burndown`
+re-seed, delete the file. Periods 2025-10 to 2026-08 (every
+cohort) were backfilled on 2026-11-27 from the Wayback Machine's monthly
+captures of the feed (`observed_at` = `wayback:<timestamp>`), replacing the
+hand-typed rows and seeds; the captures for 2026-09 to 2026-11 matched the
+watcher's rows exactly, and the only hand-typed row that didn't match
+(2026-01, cohort 2025-02: 7,800, December's figure, for 6,900) was a typo.
+The September 2025 capture is in an older format with no cohorts. Hand edits are fine — keep the header. `burndown`
 normalises hand-typed months (`2026-9`, `2026/09`) and thousands separators,
 and skips rows it can't read (a period or cohort that isn't a month, a count
 that isn't a finite number >= 0), listing their line numbers above the menu.
