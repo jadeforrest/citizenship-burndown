@@ -14,6 +14,9 @@ trickle alone, and nothing cleared at all.
 The sweep only differs from the trickle alone where it reaches the cohort
 within the horizon, so the report scores those cases again on their own.
 
+Last, the leftover share actually left by each pass the sweep has made
+(measured_passes), against what STRAGGLERS assumes.
+
     python3 backtest.py                 # every usable cutoff
     python3 backtest.py --from 2026-07  # only cutoffs from 2026-07 on
 
@@ -220,13 +223,122 @@ def report(scores: dict[str, Score], n_cases: int, cutoffs: list[str]) -> str:
     return "\n".join(lines)
 
 
+# The leftover share measured, to check STRAGGLERS against cohorts the sweep
+# has been through: a cohort's own count before its pass, and where the count
+# levelled off. Each own count is the difference of two figures rounded to
+# 100, so it's off by up to 100 (ROUNDING_SD, about 41, as a standard
+# deviation); pooling the finished cohorts averages much of that out.
+PASS_DROP = 0.25     # a fall of more than this (and 2 * ROUNDING) over
+PASS_MONTHS = 3      # PASS_MONTHS starts a pass; a month at a time misses a
+                     # slow sweep (2025-01: ~10%/mo), and 15% caught the
+                     # trickle and rounding (2025-03: 1,900 -> 1,600)
+FLOOR_MONTHS = 3     # it's over after this many months with ...
+FLOOR_CALM = 0.05    # ... no fall, monthly or in all, above this share of
+ROUNDING = 100       #     `before` or ROUNDING, whichever is more
+ROUNDING_SD = ROUNDING / 6 ** 0.5   # two uniform +-50 errors: sqrt(2 * 100^2 / 12)
+SETTLE_MONTHS = 9    # a cohort's bulge has settled by this age (3-7 months seen)
+MIN_BEFORE = 500     # smaller cohorts are too much rounding to measure
+
+
+class Pass(NamedTuple):
+    cohort: str
+    reached: str        # where its count was highest in the months before the fall
+    before: float       # the count then
+    ended: str | None   # where it levelled off; None while still falling
+    left: float         # the count then, or in the latest period while falling
+    n: int = 1          # cohorts pooled
+
+    def share(self) -> float:
+        return self.left / self.before
+
+    def bounds(self) -> tuple[float, float]:
+        """The share with `left` and `before` each two standard deviations off."""
+        e = 2 * ROUNDING_SD * self.n ** 0.5
+        return max(self.left - e, 0) / (self.before + e), (self.left + e) / (self.before - e)
+
+
+def levelled_off(series: dict[str, float], periods: list[str],
+                 before: float) -> str | None:
+    """The first of `periods` that starts FLOOR_MONTHS calm months."""
+    calm = max(FLOOR_CALM * before, ROUNDING)
+    for i in range(len(periods) - FLOOR_MONTHS):
+        run = [series[p] for p in periods[i:i + FLOOR_MONTHS + 1]]
+        if run[0] - run[-1] <= calm and all(x - y <= calm for x, y in zip(run, run[1:])):
+            return periods[i]
+    return None
+
+
+def falls(series: dict[str, float], start: str, end: str) -> bool:
+    """Whether the count fell by more than PASS_DROP and 2 * ROUNDING."""
+    drop = series[start] - series[end]
+    return drop > 2 * ROUNDING and drop > PASS_DROP * series[start]
+
+
+def sweep_pass(cohort: str, series: dict[str, float]) -> Pass | None:
+    """
+    The first fall over PASS_MONTHS that's beyond the trickle and rounding,
+    from the highest count in the 2 * PASS_MONTHS months up to where it was
+    seen (the latest, if tied) so a slow sweep's first months count, to
+    where it levelled off from then on.
+    """
+    periods = sorted(series)
+    for i in range(PASS_MONTHS, len(periods)):
+        if falls(series, periods[i - PASS_MONTHS], periods[i]):
+            look = periods[max(i - 2 * PASS_MONTHS, 0):i]
+            start = max(reversed(look), key=series.__getitem__)
+            ended = levelled_off(series, periods[i:], series[start])
+            return Pass(cohort, start, series[start], ended,
+                        series[ended or periods[-1]])
+    return None
+
+
+def measured_passes(cohorts: dict[str, list[tuple[str, float]]]) -> list[Pass]:
+    """A Pass for each cohort of at least MIN_BEFORE the sweep has reached."""
+    out = []
+    for name in sorted(cohorts):
+        settled = b.month_label(b.month_index(name) + SETTLE_MONTHS)
+        waiting = b.own_cohort(cohorts, name).waiting
+        found = sweep_pass(name, {p: n for p, n in waiting.items() if p >= settled})
+        if found and found.before >= MIN_BEFORE:
+            out.append(found)
+    return out
+
+
+def pooled(passes: list[Pass]) -> Pass:
+    """The finished passes as one: their counts before and after summed."""
+    return Pass(f"{len(passes)} pooled", "", sum(p.before for p in passes), "",
+                sum(p.left for p in passes), len(passes))
+
+
+def pass_report(passes: list[Pass], assumed: float) -> str:
+    """Each measured pass, then the finished ones pooled."""
+    lines = [f"Leftover share, measured (STRAGGLERS assumes {assumed:.0%}):",
+             "A cohort's own count before the sweep and where it levelled off. "
+             "The range allows",
+             "for the rounding (two standard deviations); '<' while still falling.",
+             "", f"  {'cohort':<11}{'reached':>8}{'before':>8}{'levelled':>10}"
+             f"{'left':>7}{'share':>7}{'range':>10}"]
+    done = [p for p in passes if p.ended]
+    rows = passes + ([pooled(done)] if len(done) > 1 else [])
+    for p in rows:
+        low, high = p.bounds()
+        share = f"{'' if p.ended is not None else '<'}{p.share():.0%}"
+        lines.append(f"  {p.cohort:<11}{p.reached:>8}{p.before:>8,.0f}"
+                     f"{'falling' if p.ended is None else p.ended:>10}"
+                     f"{p.left:>7,.0f}{share:>7}{f'{low:.0%}-{high:.0%}':>10}")
+    if not passes:
+        lines.append("  none yet.")
+    return "\n".join(lines)
+
+
 def main(argv=()) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--from", dest="start", default=b.SIZE_FROM,
                         type=b.cohort_arg, metavar="PERIOD",
                         help="earliest cutoff (default %(default)s)")
     args = parser.parse_args(list(argv))
-    all_cases = cases(b.load_cohorts(b.HISTORY_PATH), args.start)
+    cohorts = b.load_cohorts(b.HISTORY_PATH)
+    all_cases = cases(cohorts, args.start)
     if not all_cases:
         print("No cutoff has a settled cohort with later figures to check.")
         return 1
@@ -236,6 +348,7 @@ def main(argv=()) -> int:
     print("\nWhere the sweep is in or reaches the cohort within the horizon:")
     print(report(score(reached), len(reached), sorted({c.cut for c in reached}))
           if reached else "  none.")
+    print("\n" + pass_report(measured_passes(cohorts), b.STRAGGLERS))
     return 0
 
 

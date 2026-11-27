@@ -176,6 +176,166 @@ class Backtest(unittest.TestCase):
         self.assertIn("\nWhere the sweep is in or reaches the cohort within the "
                       "horizon:\n", out.getvalue())
         self.assertIn("No cutoff has a settled cohort", out.getvalue())
+        self.assertIn("\nLeftover share, measured (STRAGGLERS assumes 50%):\n",
+                      out.getvalue())
+
+
+def monthly(counts: list[float], first: str = "2025-10") -> dict[str, float]:
+    """`counts` as a series from `first`, one month apart."""
+    start = b.month_index(first)
+    return {b.month_label(start + k): float(n) for k, n in enumerate(counts)}
+
+
+def from_own(own: dict[str, list[float]], first: str = "2025-10") -> dict:
+    """
+    A history whose cohorts have these own counts: each one's people ahead
+    is the earlier cohorts' own counts summed, plus a cohort after them all.
+    """
+    names = sorted(own) + [b.month_label(b.month_index(max(own)) + 1)]
+    ahead = [0.0] * len(next(iter(own.values())))
+    out = {}
+    for name in names:
+        out[name] = sorted(monthly(ahead, first).items(), reverse=True)
+        ahead = [a + n for a, n in zip(ahead, own.get(name, [0.0] * len(ahead)))]
+    return out
+
+
+class MeasuredShares(unittest.TestCase):
+    # 2024-12's own counts from 2025-10, as the backfilled history has them.
+    SHARP = [1200, 1100, 1200, 1200, 1100, 1000, 600, 400, 200, 200, 300, 200, 300, 200]
+
+    def test_falls(self):
+        s = monthly([1000, 760, 1000, 700, 400, 199, 300, 150])
+        self.assertFalse(bt.falls(s, "2025-10", "2025-11"))   # 240, but 24%
+        self.assertTrue(bt.falls(s, "2025-12", "2026-01"))    # 300, 30%
+        self.assertTrue(bt.falls(s, "2026-02", "2026-03"))    # 201, 50%
+        self.assertFalse(bt.falls(s, "2026-04", "2026-05"))   # 50%, but 150
+        self.assertFalse(bt.falls(monthly([1000, 750]), "2025-10", "2025-11"))  # 25%
+
+    def test_levelled_off(self):
+        s = monthly([600, 400, 200, 200, 300, 200])
+        # Calm is 100 here (5% of 1,000 is less): 400 -> 200 isn't.
+        self.assertEqual(bt.levelled_off(s, sorted(s), 1000), "2025-12")
+        # A slow sweep, 100 a month: each month is calm, the run isn't.
+        slow = monthly([900, 800, 700, 600, 500])
+        self.assertIsNone(bt.levelled_off(slow, sorted(slow), 1000))
+        # A big cohort's calm is 5% of it: 300 of 6,000.
+        self.assertEqual(bt.levelled_off(slow, sorted(slow), 6000), "2025-10")
+        self.assertIsNone(bt.levelled_off(slow, sorted(slow), 5999))
+        # Too few months to tell.
+        self.assertIsNone(bt.levelled_off(s, sorted(s)[-3:], 1000))
+
+    def test_sweep_pass(self):
+        found = bt.sweep_pass("2024-12", monthly(self.SHARP))
+        self.assertEqual(found, bt.Pass("2024-12", "2026-01", 1200, "2026-06", 200))
+        self.assertAlmostEqual(found.share(), 1 / 6)
+        # A slow sweep: the fall (900 -> 500 by 2026-09) counts from the
+        # highest of the PASS_MONTHS before it (the latest of a tie), and it's
+        # still falling.
+        slow = bt.sweep_pass("2025-01", monthly(
+            [1200, 1200, 1100, 1200, 1100, 1100, 1000, 900, 900, 800, 700, 500, 500]))
+        self.assertEqual(slow, bt.Pass("2025-01", "2026-03", 1100, None, 500))
+        tie = bt.sweep_pass("x", monthly([1000, 1000, 1000, 1000, 600, 300]))
+        self.assertEqual(tie.reached, "2026-01")
+        # Flat months after the high and before the fall aren't its floor.
+        flat_first = bt.sweep_pass("x", monthly([1000, 950, 950, 950, 950, 600, 300,
+                                                 300, 300, 300]))
+        self.assertEqual(flat_first, bt.Pass("x", "2025-10", 1000, "2026-04", 300))
+        # The floor can start where the fall is seen (2024-07's did).
+        at_once = bt.sweep_pass("x", monthly([800, 700, 300, 200, 200, 100, 100]))
+        self.assertEqual(at_once, bt.Pass("x", "2025-10", 800, "2026-01", 200))
+        # The trickle and rounding alone: no pass.
+        self.assertIsNone(bt.sweep_pass("x", monthly([1900, 1900, 1800, 1700, 1600,
+                                                      1600, 1600, 1500, 1500])))
+        self.assertIsNone(bt.sweep_pass("x", monthly([1000, 100])))
+
+    def test_measured_passes(self):
+        flat = [900.0] * len(self.SHARP)
+        small = [400, 400, 400, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+        bulge = [2000, 9000] + [2000.0] * 12
+        cohorts = from_own({"2024-11": small, "2024-12": self.SHARP,
+                            "2025-01": flat, "2025-02": flat, "2025-03": bulge})
+        self.assertEqual(b.own_cohort(cohorts, "2024-12").waiting["2026-06"], 200)
+        # 2024-11 is under MIN_BEFORE, 2025-01 and 2025-02 haven't been
+        # reached, and 2025-03's fall after 2025-11 is its bulge: it's
+        # SETTLE_MONTHS old only in 2025-12.
+        self.assertEqual([p.cohort for p in bt.measured_passes(cohorts)], ["2024-12"])
+        with unittest.mock.patch.object(bt, "SETTLE_MONTHS", 8):
+            self.assertEqual([p.cohort for p in bt.measured_passes(cohorts)],
+                             ["2024-12", "2025-03"])
+        with unittest.mock.patch.object(bt, "MIN_BEFORE", 1200):
+            self.assertEqual(len(bt.measured_passes(cohorts)), 1)
+
+    def test_pooled_and_bounds(self):
+        one = bt.Pass("a", "2026-01", 1000, "2026-05", 200)
+        e = 2 * bt.ROUNDING_SD
+        self.assertAlmostEqual(e, 81.65, places=2)
+        self.assertEqual(one.bounds(), ((200 - e) / (1000 + e), (200 + e) / (1000 - e)))
+        both = bt.pooled([one, bt.Pass("b", "2026-02", 800, "2026-06", 100)])
+        self.assertEqual(both, bt.Pass("2 pooled", "", 1800, "", 300, 2))
+        self.assertAlmostEqual(both.bounds()[1], (300 + e * 2 ** 0.5) / (1800 - e * 2 ** 0.5))
+        self.assertEqual(bt.Pass("c", "", 1000, "", 0).bounds()[0], 0)
+
+    def test_bounds_hold_the_share(self):
+        rng = random.Random(20261127)
+        for i in range(300):
+            before = rng.uniform(bt.MIN_BEFORE, 50000)
+            p = bt.Pass("x", "", before, "", rng.uniform(0, before), rng.randint(1, 20))
+            with self.subTest(case=i, p=p):
+                low, high = p.bounds()
+                self.assertLessEqual(low, p.share())
+                self.assertLessEqual(p.share(), high)
+
+    def test_sweep_pass_properties(self):
+        rng = random.Random(20261128)
+        for i in range(300):
+            counts = [rng.choice(range(0, 3000, 100)) for _ in range(rng.randint(0, 16))]
+            series = monthly(counts)
+            with self.subTest(case=i, counts=counts):
+                found = bt.sweep_pass("x", series)
+                periods = sorted(series)
+                if found is None:
+                    # No fall beyond the trickle and rounding anywhere.
+                    self.assertFalse(any(
+                        bt.falls(series, a, z) for a, z in
+                        zip(periods, periods[bt.PASS_MONTHS:])))
+                    continue
+                self.assertEqual(found.before, series[found.reached])
+                self.assertEqual(found.left, series[found.ended or periods[-1]])
+                if found.ended:
+                    self.assertGreater(found.ended, found.reached)
+        # A trickle never makes a pass: under 2% a month, rounded to 100.
+        for i in range(300):
+            start, rate = rng.uniform(1000, 30000), rng.uniform(0, 0.02)
+            counts = [round(start * (1 - rate) ** k, -2) for k in range(16)]
+            with self.subTest(trickle=i, counts=counts):
+                self.assertIsNone(bt.sweep_pass("x", monthly(counts)))
+
+    def test_pass_report(self):
+        passes = [bt.Pass("2024-11", "2025-11", 800, "2026-04", 200),
+                  bt.Pass("2024-12", "2026-01", 1200, "2026-06", 200),
+                  bt.Pass("2025-01", "2026-04", 1100, None, 500)]
+        self.assertEqual(bt.pass_report(passes, 0.5), "\n".join([
+            "Leftover share, measured (STRAGGLERS assumes 50%):",
+            "A cohort's own count before the sweep and where it levelled off. "
+            "The range allows",
+            "for the rounding (two standard deviations); '<' while still falling.",
+            "",
+            "  cohort      reached  before  levelled   left  share     range",
+            "  2024-11     2025-11     800   2026-04    200    25%   13%-39%",
+            "  2024-12     2026-01   1,200   2026-06    200    17%    9%-25%",
+            "  2025-01     2026-04   1,100   falling    500   <45%   35%-57%",
+            "  2 pooled              2,000              400    20%   13%-27%"]))
+        # One finished pass isn't pooled; none at all says so.
+        self.assertNotIn("pooled", bt.pass_report(passes[1:], 0.5))
+        self.assertNotIn("none yet", bt.pass_report(passes[2:], 0.5))
+        self.assertTrue(bt.pass_report([], 0.3).endswith(
+            "(STRAGGLERS assumes 30%):\n"
+            "A cohort's own count before the sweep and where it levelled off. "
+            "The range allows\n"
+            "for the rounding (two standard deviations); '<' while still falling.\n"
+            "\n  cohort      reached  before  levelled   left  share     range\n"
+            "  none yet."))
 
 
 if __name__ == "__main__":

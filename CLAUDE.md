@@ -158,9 +158,18 @@ never reaches the cohort, so the sweep predicts exactly what the trickle
 alone does.
 `STRAGGLERS` was a hand-picked 30% until [backtest.py](backtest.py) (below)
 put 20-60% within about a point of each other once the pace had settled, with
-50% marginally best and matching the 50-55% that 2024-12 and 2025-01 were left
-at. `sweep_left` and `position` take a `share` argument so the backtest can
-try others.
+50% marginally best (it can't tell 10% from 50% either: the horizons are too
+short). The share actually left, measured since the Wayback backfill
+(`measured_passes`, below), disagrees: the early-2026 sweep left 2024-07 to
+2024-12 at 10-25% each, 18% pooled (14-22%). The 50-55% once quoted for
+2024-12 and 2025-01 predates those months being in the history. Whether the
+slower sweep since (2025-01 still falling, 1,100 -> 500 over 7 months) leaves
+the same isn't known yet; `STRAGGLERS` stays at 50% until it has finished
+with 2025-01 to 2025-03. Lowering it also changes the pace (below 50%, the
+recent pace drops from 171 to 87 a month, why not yet traced), so for
+2025-07 30% moves the 50% time from 1y 8m to 3y 4m, while 65-80% barely
+moves it. `sweep_left` and `position` take a `share` argument so the
+backtest can try others.
 
 The report (`print_fifo`) runs, in order: `print_every_cohort` (the column
 notes, `summary_items`, then two tables, one row per settled cohort, the
@@ -275,6 +284,22 @@ the full range every sweep model is badly over-optimistic, because the recent
 pace at the early cutoffs still held the fast early-2026 months. The pace,
 not the leftover share, is what moves the error. Re-run it when more months
 arrive before changing `STRAGGLERS` or switching the report to the gradient.
+
+It ends with the leftover share measured (`measured_passes`, `pass_report`),
+the direct check on `STRAGGLERS`: for each cohort the sweep has reached, its
+own count before the pass and where it levelled off. A pass starts with a fall
+over `PASS_MONTHS` (3) of more than `PASS_DROP` (25%) and 200 (`falls`; one
+month at a time misses the slow sweep, and 15% caught 2025-03's trickle and
+rounding). `before` is the highest count in the 6 months up to it, so a slow
+sweep's first months count. It has `levelled_off` once `FLOOR_MONTHS` (3) months
+in a row fall by no more than 5% of `before` or 100, monthly and in all,
+searching only from where the fall was seen. Counts are only read from
+`SETTLE_MONTHS` (9) after the cohort's month, past any bulge, and cohorts
+under `MIN_BEFORE` (500) are left out. The range is two standard deviations
+of the rounding (each own count is two figures rounded to 100, sd about 41),
+and the finished passes are pooled, which narrows it. A share is final once
+recorded: rerun at every earlier cutoff, none changed. Watch 2025-01 (still
+falling) and 2025-02/03 as the sweep finishes with them.
 
 The `FuzzPipeline` and `FuzzFifo` cases run 300 random inputs by default so
 the suite stays a quick pre-commit gate. For a longer campaign (20k cases still runs in ~2s):
